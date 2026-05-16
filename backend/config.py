@@ -6,12 +6,6 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # CTFd
-    ctfd_url: str = "http://localhost:8000"
-    ctfd_user: str = "admin"
-    ctfd_pass: str = "admin"
-    ctfd_token: str = ""
-
     # API Keys
     anthropic_api_key: str = ""
     openai_api_key: str = ""
@@ -24,10 +18,13 @@ class Settings(BaseSettings):
     azure_openai_api_key: str = ""
     opencode_zen_api_key: str = ""
 
+    # Vulnerability Research
+    targets_file: str = "targets.yml"  # Path to targets YAML file
+    max_concurrent_swarms: int = 10  # Max parallel swarms
+    max_iterations_per_swarm: int = 50  # Max attempts before giving up
+    container_memory_limit: str = "16g"
+
     # Infra
     sandbox_image: str = "ctf-sandbox"
-    max_concurrent_challenges: int = 10
-    max_attempts_per_challenge: int = 3
-    container_memory_limit: str = "16g"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

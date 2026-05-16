@@ -111,6 +111,21 @@ RUN pip3 install --no-cache-dir \
     PyJWT \
     pyghidra
 
+# ── Vulnerability Research Tools ──────────────────────────────────────────────
+# Static analysis
+RUN pip3 install --no-cache-dir semgrep bandit safety
+
+# Web vulnerability testing
+RUN pip3 install --no-cache-dir playwright requests-toolbelt sqlmap
+RUN python3 -m playwright install chromium --with-deps
+
+# Memory analysis & fuzzing
+RUN apt-get update && apt-get install -y afl++ valgrind libasan8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Reporting
+RUN pip3 install --no-cache-dir jinja2 markdown
+
 # ── PyTorch (CPU-only) + Keras ────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir --ignore-installed sympy \
     torch --index-url https://download.pytorch.org/whl/cpu \

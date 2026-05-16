@@ -1,7 +1,7 @@
 [project]
-name = "ctf-agent-two"
+name = "vuln-research-agent"
 version = "0.1.0"
-description = "CTF agent v2 — multi-model solver swarm"
+description = "Autonomous AI vulnerability research tool powered by multi-model parallel scanning"
 requires-python = ">=3.14"
 dependencies = [
     "pydantic-ai[bedrock,openai,google]",
@@ -18,8 +18,8 @@ dependencies = [
 ]
 
 [project.scripts]
-ctf-solve = "backend.cli:main"
-ctf-msg = "backend.cli:msg"
+vuln-scan = "backend.cli:main"
+vuln-msg = "backend.cli:msg"
 
 [build-system]
 requires = ["hatchling"]

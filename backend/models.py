@@ -46,6 +46,72 @@ VISION_MODELS: set[str] = {
     "gemini-3-flash-preview",
 }
 
+# Vulnerability research swarm configurations
+# Each swarm specializes in a vulnerability class with custom prompts and model selections
+SWARM_CONFIGS: dict[str, dict] = {
+    "xss": {
+        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "system_prompt_extra": (
+            "You are a web security specialist focused on XSS (Cross-Site Scripting) vulnerabilities. "
+            "Analyze the target for reflected, stored, and DOM-based XSS. "
+            "Look for unsanitized user input rendered in HTML/JS context. "
+            "Your proof-of-concept must trigger alert(1), exfiltrate a cookie, or demonstrate "
+            "arbitrary JavaScript execution. Test both input validation and output encoding."
+        ),
+    },
+    "sqli": {
+        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "system_prompt_extra": (
+            "You are a database security specialist focused on SQL injection. "
+            "Try UNION-based, error-based, blind boolean-based, and time-based techniques. "
+            "Analyze SQL queries, ORM configurations, and parameterization. "
+            "Your proof-of-concept must successfully dump at least one row of sensitive data "
+            "or modify database state. Use sqlmap and manual payload crafting."
+        ),
+    },
+    "bof": {
+        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "system_prompt_extra": (
+            "You are a binary security specialist focused on buffer overflow vulnerabilities. "
+            "Analyze stack and heap layouts. Use pwntools, GDB, and ASAN. "
+            "Your proof-of-concept must achieve instruction pointer (EIP/RIP) control, "
+            "execute arbitrary code, or crash with a distinguishable pattern. "
+            "Use fuzzing, static analysis, and dynamic debugging."
+        ),
+    },
+    "uaf": {
+        "models": ["claude-opus-4-6"],
+        "system_prompt_extra": (
+            "You are a memory safety specialist focused on use-after-free vulnerabilities. "
+            "Analyze object lifetime, memory deallocation patterns, and reference counting. "
+            "Use Valgrind, AddressSanitizer, and GDB. "
+            "Your proof-of-concept must demonstrate dangling pointer access, heap corruption, "
+            "or arbitrary memory read/write through use-after-free."
+        ),
+    },
+    "auth": {
+        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "system_prompt_extra": (
+            "You are an authentication and authorization specialist. "
+            "Focus on authentication bypass, insecure direct object reference (IDOR), "
+            "broken access control, JWT weaknesses, and session management flaws. "
+            "Your proof-of-concept must access a resource belonging to another user, "
+            "elevate privileges, or bypass authentication entirely. "
+            "Test token manipulation, session fixation, and permission checks."
+        ),
+    },
+    "source": {
+        "models": ["claude-opus-4-6"],
+        "system_prompt_extra": (
+            "You are a source code security analyst performing static and dynamic analysis. "
+            "Run semgrep with vulnerability rules, bandit for Python, and other static tools. "
+            "Identify dangerous code patterns: hardcoded secrets, unsafe deserialization, "
+            "command injection, path traversal, insecure randomness, and XXE. "
+            "Then attempt dynamic confirmation of each finding via targeted tests."
+        ),
+    },
+}
+
 
 def resolve_model(spec: str, settings: Settings) -> Model:
     """Resolve a 'provider/model_id' spec to a Pydantic AI Model."""

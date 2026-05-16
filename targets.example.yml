@@ -1,0 +1,50 @@
+# Vulnerability Research Targets Configuration
+# Define targets for AI-powered security analysis
+
+targets:
+  # Example 1: Web Application
+  - name: "ExampleWebApp"
+    type: web
+    url: "http://localhost:8080"
+    repo_url: "https://github.com/org/example-web-app"
+    vuln_classes:
+      - xss
+      - sqli
+      - auth
+    scope_allowlist:
+      - "localhost:8080"
+      - "127.0.0.1:8080"
+    description: |
+      A sample Flask e-commerce application with multiple input points.
+      Vulnerable endpoints: /search, /profile, /checkout, /admin
+
+  # Example 2: Binary/Compiled Code
+  - name: "VulnerableBinary"
+    type: binary
+    binary_path: "/tmp/vulnerable_app"
+    vuln_classes:
+      - bof
+      - uaf
+    description: |
+      A C++ application with potential memory safety issues.
+      Run with ASAN and Valgrind for memory analysis.
+
+  # Example 3: Source Code Review
+  - name: "OpenSourceLib"
+    type: source
+    repo_url: "https://github.com/org/vulnerable-lib"
+    vuln_classes:
+      - source
+      - auth
+      - sqli
+    description: |
+      A Python library with static analysis targets.
+      Focus on dangerous function usage and missing input validation.
+
+# Notes:
+# - type: "web", "binary", or "source"
+# - For web targets: url is required, repo_url is optional for context
+# - For binary targets: binary_path must be an absolute path to compiled binary
+# - For source targets: repo_url must be a valid Git repository URL
+# - vuln_classes: subset of [xss, sqli, bof, uaf, auth, source]
+# - scope_allowlist: for web targets, comma-separated list of allowed hosts/IPs
