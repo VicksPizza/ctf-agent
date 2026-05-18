@@ -38,7 +38,7 @@ RUN pip3 install --no-cache-dir --ignore-installed sympy \
     torch --index-url https://download.pytorch.org/whl/cpu \
     && pip3 install --no-cache-dir keras
 
-RUN name="$(printf 'Rsa\\103tfTool')" \
+RUN name="$(printf 'Rsa\103tfTool')" \
     && git clone --depth=1 "https://github.com/${name}/${name}" /opt/rsa-tool \
     && pip3 install --no-cache-dir /opt/rsa-tool
 
