@@ -1,7 +1,7 @@
 [project]
 name = "vuln-research-agent"
 version = "0.1.0"
-description = "Autonomous AI vulnerability research tool powered by multi-model parallel scanning"
+description = "Autonomous AI vulnerability research tool powered by multi-model parallel scanning."
 requires-python = ">=3.14"
 dependencies = [
     "pydantic-ai[bedrock,openai,google]",

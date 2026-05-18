@@ -1,83 +1,51 @@
-"""Pydantic AI tool wrappers — thin delegation to backend.tools.core."""
+"""Pydantic AI tool wrappers for the scanner sandbox."""
 
 from pydantic_ai import RunContext
 
-from backend.deps import SolverDeps
+from backend.deps import ScannerDeps
 from backend.tools.core import (
     do_bash,
-    do_check_findings,
+    do_check_notes,
     do_list_files,
     do_read_file,
     do_web_fetch,
-    do_webhook_create,
-    do_webhook_get_requests,
     do_write_file,
 )
 
 
-async def bash(ctx: RunContext[SolverDeps], command: str, timeout_seconds: int = 60) -> str:
-    """Execute a bash command inside the sandboxed Docker container.
-
-    Distfiles are at /challenge/distfiles/ (read-only).
-    Write generated/repaired files to /challenge/workspace/ (writable).
-    Challenge services are reachable via host.docker.internal.
-    Run `cat /tools.txt` to see all installed tools.
-    """
+async def bash(ctx: RunContext[ScannerDeps], command: str, timeout_seconds: int = 60) -> str:
+    """Execute a bash command inside the sandboxed Docker container."""
     return await do_bash(ctx.deps.sandbox, command, timeout_seconds)
 
 
-async def read_file(ctx: RunContext[SolverDeps], path: str) -> str:
-    """Read a file from the container. For distfiles use paths like /challenge/distfiles/readme.txt."""
+async def read_file(ctx: RunContext[ScannerDeps], path: str) -> str:
+    """Read a file from the sandbox."""
     return await do_read_file(ctx.deps.sandbox, path)
 
 
-async def write_file(ctx: RunContext[SolverDeps], path: str, content: str) -> str:
-    """Write a file into the container."""
+async def write_file(ctx: RunContext[ScannerDeps], path: str, content: str) -> str:
+    """Write a file into the sandbox workspace."""
     return await do_write_file(ctx.deps.sandbox, path, content)
 
 
-async def list_files(ctx: RunContext[SolverDeps], path: str = "/challenge/distfiles") -> str:
-    """List files in a directory inside the container."""
+async def list_files(ctx: RunContext[ScannerDeps], path: str = "/target") -> str:
+    """List files in the sandbox."""
     return await do_list_files(ctx.deps.sandbox, path)
 
 
-async def check_findings(ctx: RunContext[SolverDeps]) -> str:
-    """Check for new findings from other agents working on the same challenge.
-
-    Call this periodically to see if siblings have discovered useful information.
-    """
-    return await do_check_findings(ctx.deps.message_bus, ctx.deps.model_spec)
+async def web_fetch(ctx: RunContext[ScannerDeps], url: str, method: str = "GET", body: str = "") -> str:
+    """Fetch an in-scope URL."""
+    return await do_web_fetch(url, ctx.deps.target.scope_allowlist, method, body)
 
 
-async def notify_coordinator(ctx: RunContext[SolverDeps], message: str) -> str:
-    """Send a message to the coordinator about a strategic discovery or request.
+async def check_notes(ctx: RunContext[ScannerDeps]) -> str:
+    """Check notes from sibling scanners."""
+    return await do_check_notes(ctx.deps.message_bus, ctx.deps.model_spec)
 
-    Use this when you find something that affects the overall competition strategy,
-    like discovering a flag format pattern, a shared vulnerability across challenges,
-    or when you need help from other solvers.
-    """
+
+async def notify_coordinator(ctx: RunContext[ScannerDeps], message: str) -> str:
+    """Send a short note to the coordinator."""
     if ctx.deps.notify_coordinator:
-        try:
-            await ctx.deps.notify_coordinator(message)
-            return "Message sent to coordinator."
-        except Exception as e:
-            return f"Notification failed: {e}"
+        await ctx.deps.notify_coordinator(message)
+        return "Message sent."
     return "No coordinator connected."
-
-
-async def web_fetch(ctx: RunContext[SolverDeps], url: str, method: str = "GET", body: str = "") -> str:
-    """Fetch a URL from the host. Useful for web challenges.
-
-    Prefer bash+curl inside the sandbox for cookies/sessions.
-    """
-    return await do_web_fetch(url, method, body)
-
-
-async def webhook_create(ctx: RunContext[SolverDeps]) -> str:
-    """Create a webhook.site token for out-of-band HTTP callbacks (XSS, SSRF, bot challenges)."""
-    return await do_webhook_create()
-
-
-async def webhook_get_requests(ctx: RunContext[SolverDeps], uuid: str) -> str:
-    """Retrieve HTTP requests received by a webhook.site token."""
-    return await do_webhook_get_requests(uuid)

@@ -1,9 +1,12 @@
-"""Per-model solver agent — one model, one container, one challenge."""
+"""Per-model scanner agent."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shlex
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,291 +17,309 @@ from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
-from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
-from backend.deps import SolverDeps
+from backend.deps import ScannerDeps
+from backend.finding import Finding
 from backend.loop_detect import LOOP_WARNING_MESSAGE, LoopDetector
 from backend.models import (
+    SWARM_CONFIGS,
     model_id_from_spec,
     provider_from_spec,
     resolve_model,
     resolve_model_settings,
     supports_vision,
 )
-from backend.output_types import FlagFound
-from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
+from backend.output_types import FindingOutput
+from backend.reporter import CostTracker
 from backend.sandbox import DockerSandbox
-from backend.solver_base import CANCELLED, CORRECT_MARKERS, ERROR, FLAG_FOUND, GAVE_UP, SolverResult
-from backend.tools.flag import submit_flag
+from backend.solver_base import CANCELLED, ERROR, FINDING_CONFIRMED, NO_FINDING, ScannerResult
+from backend.target_loader import VulnTarget
 from backend.tools.sandbox import (
     bash,
-    check_findings,
+    check_notes,
     list_files,
     notify_coordinator,
     read_file,
     web_fetch,
-    webhook_create,
-    webhook_get_requests,
     write_file,
 )
 from backend.tools.vision import view_image
-from backend.tracing import SolverTracer
+from backend.tracing import ScannerTracer
 
 logger = logging.getLogger(__name__)
 
+SEMGREP_RULE_MAP = {
+    "xss": "p/xss",
+    "sqli": "p/sql-injection",
+    "auth": "p/jwt",
+    "source": "p/owasp-top-ten",
+    "bof": "p/c.lang.security",
+}
+
+
+async def run_semgrep_in_sandbox(sandbox: DockerSandbox, local_path: str, rules: str) -> str:
+    _ = local_path
+    command = f"semgrep --config {shlex.quote(rules)} --json /target/source 2>/dev/null | head -c 20000"
+    result = await sandbox.exec(command, timeout_s=180)
+    return result.stdout or result.stderr or "No semgrep output."
+
+
+async def build_solver_context(target: VulnTarget, vuln_class: str, sandbox: DockerSandbox) -> str:
+    context = ""
+    if target.repo_url:
+        result = await sandbox.exec(
+            f"rm -rf /target/source && git clone --depth=1 {shlex.quote(target.repo_url)} /target/source",
+            timeout_s=180,
+        )
+        target.local_path = "/target/source"
+        if result.exit_code != 0:
+            return f"Repository clone failed:\n{result.stderr}\n"
+        rules = SEMGREP_RULE_MAP.get(vuln_class, "auto")
+        results = await run_semgrep_in_sandbox(sandbox, target.local_path, rules)
+        context = f"Semgrep pre-scan results for {vuln_class}:\n{results}\n"
+        context += "Start by verifying these candidates, then expand search.\n"
+    return context
+
+
+def validate_finding(finding: Finding) -> bool:
+    return (
+        finding.confirmed
+        and bool(finding.proof_of_concept.strip())
+        and bool(finding.affected_component.strip())
+        and finding.affected_component.strip().lower() != "unknown"
+        and finding.severity is not None
+    )
+
+
+def build_scanner_prompt(target: VulnTarget, vuln_class: str, source_context: str = "") -> str:
+    extra = SWARM_CONFIGS.get(vuln_class, {}).get("system_prompt_extra", "")
+    return f"""You are an authorized vulnerability research scanner.
+
+Target:
+- Name: {target.name}
+- Type: {target.type}
+- URL: {target.url or "none"}
+- Repository: {target.repo_url or "none"}
+- Binary: {target.binary_path or "none"}
+- Scope allowlist: {", ".join(target.scope_allowlist) or "none"}
+- Description: {target.description or "none"}
+
+Vulnerability class: {vuln_class}
+{extra}
+
+Scope rules:
+- Only interact with hosts and paths in scope_allowlist.
+- Keep testing read-only unless the target definition explicitly says otherwise.
+- Do not send target data to external hosts.
+- A reportable issue must include a confirmed, reproducible proof of concept.
+
+{source_context}
+
+Return structured JSON only. If you confirm a vulnerability, set type to "finding".
+If you cannot confirm one this turn, set type to "no_finding" and explain what was tried in evidence.
+"""
+
 
 @dataclass
-class TracingToolset(WrapperToolset[SolverDeps]):
-    """Wraps a toolset to add per-call tracing and loop detection."""
-
-    tracer: SolverTracer = field(repr=False)
+class TracingToolset(WrapperToolset[ScannerDeps]):
+    tracer: ScannerTracer = field(repr=False)
     loop_detector: LoopDetector = field(repr=False)
     step_counter: list[int] = field(repr=False)
 
     async def call_tool(
-        self, name: str, tool_args: dict[str, Any], ctx: RunContext[SolverDeps], tool: ToolsetTool[SolverDeps]
+        self,
+        name: str,
+        tool_args: dict[str, Any],
+        ctx: RunContext[ScannerDeps],
+        tool: ToolsetTool[ScannerDeps],
     ) -> Any:
         self.step_counter[0] += 1
         step = self.step_counter[0]
-
         self.tracer.tool_call(name, tool_args, step)
-
-        # Loop detection
         loop_status = self.loop_detector.check(name, tool_args)
         if loop_status == "break":
-            logger.warning(f"Loop break on {name} at step {step}")
             self.tracer.event("loop_break", tool=name, step=step)
-            # Inject loop warning by returning it as the tool result
             return LOOP_WARNING_MESSAGE
-
         result = await self.wrapped.call_tool(name, tool_args, ctx, tool)
-
-        result_str = str(result) if result is not None else ""
-        self.tracer.tool_result(name, result_str, step)
-
-        # Inject loop warning alongside result on "warn" level
-        if loop_status == "warn":
-            result = f"{result}\n\n{LOOP_WARNING_MESSAGE}" if isinstance(result, str) else result
-
-        # Check for confirmed flag
-        if name == "submit_flag" and any(m in result_str for m in CORRECT_MARKERS):
-            self.tracer.event("flag_confirmed", tool=name, step=step)
-
-        if step % 5 == 0 and ctx.deps.message_bus and isinstance(result, str):
-            from backend.tools.core import do_check_findings
-            findings_text = await do_check_findings(ctx.deps.message_bus, ctx.deps.model_spec)
-            if findings_text and "No new findings" not in findings_text:
-                result = f"{result}\n\n---\n{findings_text}"
-                self.tracer.event("findings_injected", step=step)
-
+        result_text = str(result) if result is not None else ""
+        self.tracer.tool_result(name, result_text, step)
+        if loop_status == "warn" and isinstance(result, str):
+            return f"{result}\n\n{LOOP_WARNING_MESSAGE}"
         return result
 
 
-def _build_toolset(deps: SolverDeps) -> FunctionToolset[SolverDeps]:
-    """Build the raw toolset for a solver agent."""
-    tools = [bash, read_file, write_file, list_files, submit_flag, web_fetch,
-             webhook_create, webhook_get_requests, check_findings, notify_coordinator]
+def _build_toolset(deps: ScannerDeps) -> FunctionToolset[ScannerDeps]:
+    tools = [bash, read_file, write_file, list_files, web_fetch, check_notes, notify_coordinator]
     if deps.use_vision:
         tools.append(view_image)
     return FunctionToolset(tools=tools, max_retries=4)
 
 
-class Solver:
-    """A single solver: one model, one container, one challenge."""
-
+class Scanner:
     def __init__(
         self,
         model_spec: str,
-        challenge_dir: str,
-        meta: ChallengeMeta,
-        ctfd: CTFdClient,
+        target: VulnTarget,
+        vuln_class: str,
         cost_tracker: CostTracker,
         settings: object,
         cancel_event: asyncio.Event | None = None,
-        sandbox: DockerSandbox | None = None,
-        owns_sandbox: bool | None = None,
+        message_bus=None,
+        notify_coordinator=None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
-        self.challenge_dir = challenge_dir
-        self.meta = meta
-        self.ctfd = ctfd
+        self.target = target
+        self.vuln_class = vuln_class
         self.cost_tracker = cost_tracker
         self.settings = settings
         self.cancel_event = cancel_event or asyncio.Event()
-        self._owns_sandbox = owns_sandbox if owns_sandbox is not None else (sandbox is None)
-
-        self.sandbox = sandbox or DockerSandbox(
-            image=getattr(settings, "sandbox_image", "ctf-sandbox"),
-            challenge_dir=challenge_dir,
-            memory_limit=getattr(settings, "container_memory_limit", "4g"),
+        self.message_bus = message_bus
+        self.notify_coordinator = notify_coordinator
+        self.sandbox = DockerSandbox(
+            image=getattr(settings, "sandbox_image", "vuln-research-sandbox"),
+            target_dir=target.binary_path or "",
+            memory_limit=getattr(settings, "container_memory_limit", "16g"),
         )
         self.use_vision = supports_vision(model_spec)
-        self.deps = SolverDeps(
-            sandbox=self.sandbox,
-            ctfd=ctfd,
-            challenge_dir=challenge_dir,
-            challenge_name=meta.name,
-            workspace_dir="",
-            use_vision=self.use_vision,
-            cost_tracker=cost_tracker,
-        )
+        self.tracer = ScannerTracer(f"{target.name}-{vuln_class}", self.model_id)
         self.loop_detector = LoopDetector()
-        self.tracer = SolverTracer(meta.name, self.model_id)
-        self.agent_name = f"{meta.name}/{self.model_id}"
-        self._agent: Agent[SolverDeps, FlagFound] | None = None
+        self.agent_name = f"{target.name}/{vuln_class}/{self.model_id}"
+        self._agent: Agent[ScannerDeps, FindingOutput] | None = None
         self._messages: list = []
-        self._step_count = [0]  # mutable ref shared with TracingToolset
-        self._flag: str | None = None
-        self._confirmed: bool = False
-        self._findings: str = ""
+        self._step_count = [0]
+        self._notes = ""
 
     async def start(self) -> None:
-        """Start the sandbox and build the agent."""
-        if not self.sandbox._container:
-            await self.sandbox.start()
-        self.deps.workspace_dir = self.sandbox.workspace_dir
-
-        arch_result = await self.sandbox.exec("uname -m", timeout_s=10)
-        container_arch = arch_result.stdout.strip() or "unknown"
-
-        distfile_names = list_distfiles(self.challenge_dir)
-        system_prompt = build_prompt(
-            self.meta,
-            distfile_names,
-            container_arch=container_arch,
+        await self.sandbox.start()
+        context = await build_solver_context(self.target, self.vuln_class, self.sandbox)
+        deps = ScannerDeps(
+            sandbox=self.sandbox,
+            target=self.target,
+            vuln_class=self.vuln_class,
+            workspace_dir=self.sandbox.workspace_dir,
+            use_vision=self.use_vision,
+            cost_tracker=self.cost_tracker,
+            message_bus=self.message_bus,
+            model_spec=self.model_spec,
+            notify_coordinator=self.notify_coordinator,
         )
-
-        model = resolve_model(self.model_spec, self.settings)
-        model_settings = resolve_model_settings(self.model_spec)
-        raw_toolset = _build_toolset(self.deps)
         toolset = TracingToolset(
-            wrapped=raw_toolset,
+            wrapped=_build_toolset(deps),
             tracer=self.tracer,
             loop_detector=self.loop_detector,
             step_counter=self._step_count,
         )
-
         self._agent = Agent(
-            model,
-            deps_type=SolverDeps,
-            system_prompt=system_prompt,
-            model_settings=model_settings,
+            resolve_model(self.model_spec, self.settings),
+            deps_type=ScannerDeps,
+            system_prompt=build_scanner_prompt(self.target, self.vuln_class, context),
+            model_settings=resolve_model_settings(self.model_spec),
             toolsets=[toolset],
-            output_type=FlagFound,
+            output_type=FindingOutput,
         )
+        self._deps = deps
+        self.tracer.event("start", target=self.target.name, vuln_class=self.vuln_class, model=self.model_id)
 
-        self.tracer.event("start", challenge=self.meta.name, model=self.model_id)
-        logger.info(f"[{self.agent_name}] Solver started")
-
-    async def run_until_done_or_gave_up(self) -> SolverResult:
-        """Run the solver loop until flag found, gave up, or cancelled."""
+    async def run_once(self) -> ScannerResult:
         if not self._agent:
             await self.start()
         assert self._agent is not None
+        prompt = (
+            f"Scan for {self.vuln_class}. Confirm a proof of concept before returning a finding."
+            if not self._messages
+            else "Continue from the prior work. Avoid repeating failed attempts."
+        )
+        if self._notes:
+            prompt += f"\n\nCoordinator or sibling notes:\n{self._notes}"
+            self._notes = ""
 
-        t0 = time.monotonic()
-        steps_before = self._step_count[0]
-
+        started = time.monotonic()
         try:
             from pydantic_ai.usage import UsageLimits
+
             result = await self._agent.run(
-                "Solve this CTF challenge." if not self._messages else "Continue solving.",
-                deps=self.deps,
+                prompt,
+                deps=self._deps,
                 message_history=self._messages if self._messages else None,
                 usage_limits=UsageLimits(request_limit=None),
             )
-
-            duration = time.monotonic() - t0
             usage = result.usage()
-
-            self.cost_tracker.record(
-                self.agent_name, usage, self.model_id,
+            self.cost_tracker.record_usage(
+                self.agent_name,
+                usage,
+                self.model_id,
                 provider_spec=provider_from_spec(self.model_spec),
-                duration_seconds=duration,
+                duration_seconds=time.monotonic() - started,
             )
-
-            agent_usage = self.cost_tracker.by_agent.get(self.agent_name)
-            self.tracer.usage(
-                usage.input_tokens, usage.output_tokens,
-                usage.cache_read_tokens,
-                agent_usage.cost_usd if agent_usage else 0.0,
-            )
-
+            self.tracer.usage(usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, 0.0)
             self._messages = result.all_messages()
 
-            # Trace model responses from new messages
-            from pydantic_ai.messages import ModelResponse, TextPart
-            for msg in result.new_messages():
-                if isinstance(msg, ModelResponse):
-                    text_parts = [p.content for p in msg.parts if isinstance(p, TextPart)]
-                    text = " ".join(text_parts)
-                    msg_usage = msg.usage
-                    self.tracer.model_response(
-                        text[:500], self._step_count[0],
-                        input_tokens=msg_usage.input_tokens if msg_usage else 0,
-                        output_tokens=msg_usage.output_tokens if msg_usage else 0,
-                    )
-
             output = result.output
-            if isinstance(output, FlagFound):
-                self._flag = output.flag
-                self._findings = f"Flag found via {output.method}: {output.flag}"
-                # In dry-run mode, structured output is sufficient (can't verify via CTFd)
-                if self.deps.no_submit:
-                    self._confirmed = True
-            # CTFd confirmation always counts (the primary path when not in dry-run)
-            if self.deps.confirmed_flag:
-                self._confirmed = True
-                self._flag = self._flag or self.deps.confirmed_flag
-
-            if self._confirmed and self._flag:
-                return self._result(FLAG_FOUND)
-            return self._result(GAVE_UP)
-
+            if output.type == "finding":
+                finding = Finding(
+                    vuln_class=output.vuln_class,
+                    affected_component=output.affected_component,
+                    severity=output.severity,  # type: ignore[arg-type]
+                    proof_of_concept=output.proof_of_concept,
+                    evidence=output.evidence,
+                    confirmed=output.confirmed,
+                    solver_model=self.model_id,
+                    description=output.description,
+                )
+                if validate_finding(finding):
+                    return ScannerResult(finding, FINDING_CONFIRMED, output.description, self._step_count[0], 0.0, self.tracer.path)
+                return ScannerResult(finding, NO_FINDING, "Finding did not pass validation.", self._step_count[0], 0.0, self.tracer.path)
+            return ScannerResult(None, NO_FINDING, output.evidence, self._step_count[0], 0.0, self.tracer.path)
         except asyncio.CancelledError:
-            return self._result(CANCELLED)
-        except Exception as e:
-            logger.error(f"[{self.agent_name}] Error: {e}", exc_info=True)
-            self._findings = f"Error: {e}"
-            self.tracer.event("error", error=str(e))
-            return self._result(ERROR)
+            return ScannerResult(None, CANCELLED, "", self._step_count[0], 0.0, self.tracer.path)
+        except Exception as exc:
+            logger.error("[%s] scanner error: %s", self.agent_name, exc, exc_info=True)
+            return ScannerResult(None, ERROR, str(exc), self._step_count[0], 0.0, self.tracer.path)
 
     def bump(self, insights: str) -> None:
-        """Inject insights from siblings and prepare to resume."""
-        bump_msg = ModelRequest(
-            parts=[
-                UserPromptPart(
-                    content=(
-                        "Your previous attempt did not find the flag. Here are insights "
-                        "from other agents working on the same challenge:\n\n"
-                        f"{insights}\n\n"
-                        "Use these insights to try a different approach. "
-                        "Do NOT repeat what has already been tried."
-                    )
-                )
-            ]
-        )
-        self._messages.append(bump_msg)
+        self._notes = insights
+        self._messages.append(ModelRequest(parts=[UserPromptPart(content=insights)]))
         self.loop_detector.reset()
-        self.tracer.event("bump", insights=insights[:500])
-        logger.info(f"[{self.agent_name}] Bumped with sibling insights")
-
-    def _result(self, status: str, run_steps: int | None = None, run_cost: float | None = None) -> SolverResult:
-        agent_usage = self.cost_tracker.by_agent.get(self.agent_name)
-        cost = agent_usage.cost_usd if agent_usage else 0.0
-        self.tracer.event("finish", status=status, flag=self._flag, confirmed=self._confirmed, cost_usd=round(cost, 4))
-        return SolverResult(
-            flag=self._flag,
-            status=status,
-            findings_summary=self._findings[:2000],
-            step_count=run_steps if run_steps is not None else self._step_count[0],
-            cost_usd=run_cost if run_cost is not None else cost,
-            log_path=self.tracer.path,
-        )
 
     async def stop(self) -> None:
-        self.tracer.event("stop", step_count=self._step_count[0])
         self.tracer.close()
-        if self._owns_sandbox and self.sandbox:
-            await self.sandbox.stop()
+        await self.sandbox.stop()
+
+
+async def clone_repo_to_temp(repo_url: str) -> str:
+    path = tempfile.mkdtemp(prefix="vuln-source-")
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        "clone",
+        "--depth=1",
+        repo_url,
+        path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError((stderr or stdout).decode("utf-8", errors="replace"))
+    return path
+
+
+def parse_finding_json(text: str, model_id: str) -> Finding | None:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if data.get("type") != "finding":
+        return None
+    return Finding(
+        vuln_class=data.get("vuln_class", ""),
+        affected_component=data.get("affected_component", ""),
+        severity=data.get("severity", "medium"),
+        proof_of_concept=data.get("proof_of_concept", ""),
+        evidence=data.get("evidence", ""),
+        confirmed=bool(data.get("confirmed")),
+        solver_model=model_id,
+        description=data.get("description", ""),
+    )
+
+
+Solver = Scanner

@@ -1,152 +1,92 @@
-# CTF Agent
+# Vuln Research Agent
 
-Autonomous CTF (Capture The Flag) solver that races multiple AI models against challenges in parallel. Built in a weekend, we used it to solve all 52/52 challenges and win **1st place at BSidesSF 2026 CTF**.
+An autonomous AI vulnerability research tool. Multiple AI models scan a target application in parallel; the first scanner swarm to confirm a finding ends that vulnerability-class run.
 
-Built by [Veria Labs](https://verialabs.com), founded by members of [.;,;.](https://ctftime.org/team/222911) (smiley), the [#1 US CTF team on CTFTime in 2024 and 2025](https://ctftime.org/stats/2024/US). We build AI agents that find and exploit real security vulnerabilities for large enterprises.
+## What It Does
 
-## Results
-
-| Competition | Challenges Solved | Result |
-|-------------|:-:|--------|
-| **BSidesSF 2026** | 52/52 (100%) | **1st place ($1,500)** |
-
-The agent solves challenges across all categories — pwn, rev, crypto, forensics, web, and misc.
-
-## How It Works
-
-A **coordinator** LLM manages the competition while **solver swarms** attack individual challenges. Each swarm runs multiple models simultaneously — the first to find the flag wins.
-
-```
-                        +-----------------+
-                        |  CTFd Platform  |
-                        +--------+--------+
-                                 |
-                        +--------v--------+
-                        |  Poller (5s)    |
-                        +--------+--------+
-                                 |
-                        +--------v--------+
-                        | Coordinator LLM |
-                        | (Claude/Codex)  |
-                        +--------+--------+
-                                 |
-              +------------------+------------------+
-              |                  |                  |
-     +--------v--------+ +------v---------+ +------v---------+
-     | Swarm:          | | Swarm:         | | Swarm:         |
-     | challenge-1     | | challenge-2    | | challenge-N    |
-     |                 | |                | |                |
-     |  Opus (med)     | |  Opus (med)    | |                |
-     |  Opus (max)     | |  Opus (max)    | |     ...        |
-     |  GPT-5.4        | |  GPT-5.4       | |                |
-     |  GPT-5.4-mini   | |  GPT-5.4-mini  | |                |
-     |  GPT-5.3-codex  | |  GPT-5.3-codex | |                |
-     +--------+--------+ +--------+-------+ +----------------+
-              |                    |
-     +--------v--------+  +-------v--------+
-     | Docker Sandbox  |  | Docker Sandbox |
-     | (isolated)      |  | (isolated)     |
-     |                 |  |                |
-     | pwntools, r2,   |  | pwntools, r2,  |
-     | gdb, python...  |  | gdb, python... |
-     +-----------------+  +----------------+
-```
-
-Each solver runs in an isolated Docker container with CTF tools pre-installed. Solvers never give up — they keep trying different approaches until the flag is found.
+- Accepts a live web app URL, source repository, or local binary as the target
+- Runs specialized scanner swarms per vulnerability class, including XSS, SQLi, buffer overflow, use-after-free, auth bypass, and source review
+- Validates findings by requiring a working proof of concept
+- Outputs a structured report with confirmed vulnerabilities and full API cost accounting
 
 ## Quick Start
 
 ```bash
-# Install
 uv sync
-
-# Build sandbox image
-docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
-
-# Configure credentials
+docker build -f sandbox/Dockerfile.sandbox -t vuln-research-sandbox .
 cp .env.example .env
-# Edit .env with your API keys and CTFd token
-
-# Run against a CTFd instance
-uv run ctf-solve \
-  --ctfd-url https://ctf.example.com \
-  --ctfd-token ctfd_your_token \
-  --challenges-dir challenges \
-  --max-challenges 10 \
-  -v
 ```
 
-## Coordinator Backends
+Create `targets.yml`:
+
+```yaml
+targets:
+  - name: "MyApp"
+    type: web
+    url: "http://localhost:8080"
+    repo_url: "https://github.com/org/myapp"
+    vuln_classes: [xss, sqli, auth]
+    scope_allowlist: ["localhost:8080"]
+    description: "Flask e-commerce app"
+```
+
+Run a scan:
 
 ```bash
-# Claude SDK coordinator (default)
-uv run ctf-solve --coordinator claude ...
-
-# Codex coordinator (GPT-5.4 via JSON-RPC)
-uv run ctf-solve --coordinator codex ...
+uv run vuln-scan --targets targets.yml --target MyApp --output report.md --json-output report.json
 ```
 
-## Solver Models
+## Scanner Swarms
 
-Default model lineup (configurable in `backend/models.py`):
+Scanner swarms are selected from `backend/models.py`:
 
-| Model | Provider | Notes |
-|-------|----------|-------|
-| Claude Opus 4.6 (medium) | Claude SDK | Balanced speed/quality |
-| Claude Opus 4.6 (max) | Claude SDK | Deep reasoning |
-| GPT-5.4 | Codex | Best overall solver |
-| GPT-5.4-mini | Codex | Fast, good for easy challenges |
-| GPT-5.3-codex | Codex | Reasoning model (xhigh effort) |
+- `xss`: reflected, stored, and DOM XSS
+- `sqli`: union, error-based, boolean, and time-based SQL injection
+- `bof`: stack and heap buffer overflow analysis
+- `uaf`: object lifetime and dangling pointer analysis
+- `auth`: auth bypass, IDOR, broken access control, and JWT weaknesses
+- `source`: static analysis plus dynamic confirmation
+
+Each swarm runs the configured model lineup for that vulnerability class and stops when a confirmed finding is returned or the iteration limit is reached.
 
 ## Sandbox Tooling
 
-Each solver gets an isolated Docker container pre-loaded with CTF tools:
+Each scanner runs in an isolated Docker container with tooling for:
 
-| Category | Tools |
-|----------|-------|
-| **Binary** | radare2, GDB, objdump, binwalk, strings, readelf |
-| **Pwn** | pwntools, ROPgadget, angr, unicorn, capstone |
-| **Crypto** | SageMath, RsaCtfTool, z3, gmpy2, pycryptodome, cado-nfs |
-| **Forensics** | volatility3, Sleuthkit (mmls/fls/icat), foremost, exiftool |
-| **Stego** | steghide, stegseek, zsteg, ImageMagick, tesseract OCR |
-| **Web** | curl, nmap, Python requests, flask |
-| **Misc** | ffmpeg, sox, Pillow, numpy, scipy, PyTorch, podman |
+- Static analysis: Semgrep, Bandit, Safety
+- Web testing: Playwright, sqlmap, requests-toolbelt, curl, nmap
+- Binary analysis: GDB, radare2, binutils, pwntools, angr, ROPgadget
+- Fuzzing and memory analysis: afl++, Valgrind, AddressSanitizer
+- Source checkout and reporting: git, Jinja2, Markdown
 
-## Features
+## Output
 
-- **Multi-model racing** — multiple AI models attack each challenge simultaneously
-- **Auto-spawn** — new challenges detected and attacked automatically
-- **Coordinator LLM** — reads solver traces, crafts targeted technical guidance
-- **Cross-solver insights** — findings shared between models via message bus
-- **Docker sandboxes** — isolated containers with full CTF tooling
-- **Operator messaging** — send hints to running solvers mid-competition
+The reporter writes:
+
+- Markdown report with target metadata, findings, proof-of-concept blocks, evidence, cost summary, and cost breakdown
+- JSON report with the same finding data and machine-readable cost accounting
+
+Only findings with `confirmed=true`, a non-empty proof of concept, a specific affected component, and a severity are counted as confirmed.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in your keys:
-
-```bash
-cp .env.example .env
-```
+`.env` provides model and infrastructure settings:
 
 ```env
-CTFD_URL=https://ctf.example.com
-CTFD_TOKEN=ctfd_your_token
-ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=sk-...
 OPENAI_API_KEY=sk-...
-GEMINI_API_KEY=...
+GEMINI_API_KEY=
+TARGETS_FILE=targets.yml
+MAX_CONCURRENT_SWARMS=10
+MAX_ITERATIONS_PER_SWARM=50
+SANDBOX_IMAGE=vuln-research-sandbox
 ```
 
-All settings can also be passed as environment variables or CLI flags.
+`targets.yml` defines the authorized research scope. Scanners may only interact with hosts or paths in `scope_allowlist`.
 
 ## Requirements
 
 - Python 3.14+
 - Docker
-- API keys for at least one provider (Anthropic, OpenAI, Google)
-- `codex` CLI (for Codex solver/coordinator)
-- `claude` CLI (bundled with claude-agent-sdk)
-
-## Acknowledgements
-
-- [es3n1n/Eruditus](https://github.com/es3n1n/Eruditus) — CTFd interaction and HTML helpers in `pull_challenges.py`
+- `uv`
+- API keys or provider credentials for the configured models

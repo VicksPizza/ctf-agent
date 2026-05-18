@@ -1,20 +1,20 @@
-"""Vulnerability report generation and cost tracking."""
+"""Vulnerability report generation and API cost accounting."""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from backend.finding import Finding
+from pydantic_ai.usage import RunUsage
+
+from backend.finding import Finding, deduplicate
+from backend.models import model_id_from_spec
 from backend.target_loader import VulnTarget
 
 
 @dataclass
 class ModelCall:
-    """Record of a single LLM API call."""
-
     model: str
     swarm_id: str
     vuln_class: str
@@ -24,63 +24,85 @@ class ModelCall:
 
 
 class CostTracker:
-    """Track and calculate costs across all LLM calls in a research session."""
-
-    # Pricing per million tokens (update as models change)
     PRICE_PER_MILLION = {
         "claude-opus-4-6": {"input": 15.00, "output": 75.00},
         "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
         "gpt-5.4": {"input": 10.00, "output": 30.00},
         "gpt-5.4-mini": {"input": 0.15, "output": 0.60},
         "gpt-5.3-codex": {"input": 3.00, "output": 15.00},
-        "gpt-5.3-codex-spark": {"input": 0.50, "output": 2.00},
-        "gemini-3-flash-preview": {"input": 0.075, "output": 0.30},
     }
 
     def __init__(self) -> None:
         self.calls: list[ModelCall] = []
 
     def record(self, call: ModelCall) -> None:
-        """Record an LLM API call."""
         self.calls.append(call)
 
+    def record_tokens(
+        self,
+        agent_name: str,
+        model_name: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        provider_spec: str = "",
+        duration_seconds: float = 0.0,
+    ) -> None:
+        _ = cache_read_tokens, provider_spec, duration_seconds
+        vuln_class = agent_name.split("/", 2)[1] if "/" in agent_name else "general"
+        self.record(
+            ModelCall(
+                model=model_id_from_spec(model_name),
+                swarm_id=agent_name,
+                vuln_class=vuln_class,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        )
+
+    def record_usage(
+        self,
+        agent_name: str,
+        usage: RunUsage,
+        model_name: str,
+        provider_spec: str = "",
+        duration_seconds: float = 0.0,
+    ) -> None:
+        _ = provider_spec, duration_seconds
+        self.record_tokens(
+            agent_name=agent_name,
+            model_name=model_name,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+        )
+
     def cost_for_call(self, call: ModelCall) -> float:
-        """Calculate cost for a single call."""
-        prices = self.PRICE_PER_MILLION.get(call.model, {"input": 0, "output": 0})
-        input_cost = (call.input_tokens / 1_000_000) * prices["input"]
-        output_cost = (call.output_tokens / 1_000_000) * prices["output"]
-        return input_cost + output_cost
+        prices = self.PRICE_PER_MILLION.get(call.model, {"input": 0.0, "output": 0.0})
+        return (
+            (call.input_tokens / 1_000_000) * prices["input"]
+            + (call.output_tokens / 1_000_000) * prices["output"]
+        )
 
     def total_cost(self) -> float:
-        """Total cost in USD for all recorded calls."""
-        return sum(self.cost_for_call(c) for c in self.calls)
+        return sum(self.cost_for_call(call) for call in self.calls)
 
     def cost_by_swarm(self) -> dict[str, float]:
-        """Cost breakdown by swarm (vulnerability class)."""
         result: dict[str, float] = {}
         for call in self.calls:
-            swarm_key = f"{call.swarm_id}:{call.vuln_class}"
-            result[swarm_key] = result.get(swarm_key, 0) + self.cost_for_call(call)
+            result[call.swarm_id] = result.get(call.swarm_id, 0.0) + self.cost_for_call(call)
         return result
 
     def cost_by_model(self) -> dict[str, float]:
-        """Cost breakdown by model."""
         result: dict[str, float] = {}
         for call in self.calls:
-            result[call.model] = result.get(call.model, 0) + self.cost_for_call(call)
+            result[call.model] = result.get(call.model, 0.0) + self.cost_for_call(call)
         return result
 
     def total_tokens(self) -> dict[str, int]:
-        """Token usage totals."""
-        return {
-            "input": sum(c.input_tokens for c in self.calls),
-            "output": sum(c.output_tokens for c in self.calls),
-            "total": sum(c.input_tokens + c.output_tokens for c in self.calls),
-        }
-
-    def call_count(self) -> int:
-        """Total number of LLM calls."""
-        return len(self.calls)
+        input_tokens = sum(call.input_tokens for call in self.calls)
+        output_tokens = sum(call.output_tokens for call in self.calls)
+        return {"input": input_tokens, "output": output_tokens, "total": input_tokens + output_tokens}
 
 
 async def generate_report(
@@ -88,162 +110,102 @@ async def generate_report(
     target: VulnTarget,
     tracker: CostTracker,
 ) -> dict[str, Any]:
-    """
-    Generate a comprehensive vulnerability research report.
-
-    Returns:
-        {
-            "markdown": str,           # Markdown report
-            "json": dict,              # JSON report
-            "summary": {...},          # Severity counts
-            "cost_summary": {...},     # Cost breakdown
-        }
-    """
-    # Count by severity
+    findings = deduplicate(findings)
+    confirmed = [finding for finding in findings if finding.confirmed]
     severity_counts = {
-        "critical": len([f for f in findings if f.severity == "critical"]),
-        "high": len([f for f in findings if f.severity == "high"]),
-        "medium": len([f for f in findings if f.severity == "medium"]),
-        "low": len([f for f in findings if f.severity == "low"]),
-        "info": len([f for f in findings if f.severity == "info"]),
+        severity: sum(1 for finding in confirmed if finding.severity == severity)
+        for severity in ("critical", "high", "medium", "low", "info")
     }
-    confirmed_count = len([f for f in findings if f.confirmed])
-    total_count = len(findings)
+    total_confirmed = len(confirmed)
+    tokens = tracker.total_tokens()
+    total_cost = tracker.total_cost()
+    cost_per_finding = total_cost / total_confirmed if total_confirmed else 0.0
 
-    # Generate Markdown report
-    md_lines = [
+    lines = [
         "# Vulnerability Research Report",
-        "",
         f"**Target:** {target.name}",
-        f"**Type:** {target.type.upper()}",
         f"**Date:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-        "",
-        f"**Total Findings:** {total_count}  ",
-        f"**Confirmed:** {confirmed_count}  ",
+        f"**Confirmed Findings:** {total_confirmed}",
         "",
         "---",
         "",
-        "## Findings by Severity",
+        "## Findings",
         "",
     ]
 
-    for severity in ("critical", "high", "medium", "low", "info"):
-        count = severity_counts[severity]
-        md_lines.append(f"- **{severity.upper()}**: {count}")
-
-    md_lines.extend(["", "---", "", "## Detailed Findings", ""])
+    if not findings:
+        lines.extend(["No findings were confirmed.", ""])
 
     for finding in findings:
-        status_badge = "✓ CONFIRMED" if finding.confirmed else "⚠ UNCONFIRMED"
-        md_lines.extend([
-            f"### [{finding.severity.upper()}] {finding.vuln_class} — {finding.affected_component}",
+        lines.extend(
+            [
+                f"### [{finding.severity.upper()}] {finding.vuln_class} - {finding.affected_component}",
+                f"**Confirmed:** {'Yes' if finding.confirmed else 'No'}",
+                "**Proof of Concept:**",
+                "",
+                "```",
+                finding.proof_of_concept or "None provided.",
+                "```",
+                "",
+                "**Evidence:**",
+                "",
+                "```",
+                finding.evidence or "None provided.",
+                "```",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## Cost Summary",
             "",
-            f"**Status:** {status_badge}  ",
-            f"**Severity:** {finding.severity.upper()}  ",
-            f"**Found by:** {finding.solver_model}  ",
-            f"**Timestamp:** {finding.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}  ",
+            f"**Total Cost:** ${total_cost:.4f}",
+            f"**Cost per Confirmed Finding:** ${cost_per_finding:.4f}",
+            f"**Total Tokens:** {tokens['total']}",
+            f"**Input Tokens:** {tokens['input']}",
+            f"**Output Tokens:** {tokens['output']}",
             "",
-        ])
+            "## Cost Breakdown",
+            "",
+            "### By Model",
+        ]
+    )
+    for model, cost in sorted(tracker.cost_by_model().items()):
+        lines.append(f"- {model}: ${cost:.4f}")
+    lines.append("")
+    lines.append("### By Scanner Swarm")
+    for swarm_id, cost in sorted(tracker.cost_by_swarm().items()):
+        lines.append(f"- {swarm_id}: ${cost:.4f}")
 
-        if finding.description:
-            md_lines.extend(["**Description:**", f"{finding.description}", ""])
-
-        if finding.proof_of_concept:
-            md_lines.extend(["**Proof of Concept:**", "", "```", finding.proof_of_concept, "```", ""])
-
-        if finding.evidence:
-            md_lines.extend(["**Evidence:**", "", "```", finding.evidence[:500], "```", ""])
-
-        md_lines.append("")
-
-    # Cost Summary section
-    tokens = tracker.total_tokens()
-    total_cost = tracker.total_cost()
-    cost_per_finding = total_cost / total_count if total_count > 0 else 0
-
-    md_lines.extend([
-        "---",
-        "",
-        "## Cost Summary",
-        "",
-        f"**Total Cost:** ${total_cost:.2f} USD  ",
-        f"**Total API Calls:** {tracker.call_count()}  ",
-        f"**Total Tokens:** {tokens['total']:,}  ",
-        f"  - Input: {tokens['input']:,}  ",
-        f"  - Output: {tokens['output']:,}  ",
-        "",
-        f"**Cost per Finding:** ${cost_per_finding:.4f} USD  ",
-        "",
-    ])
-
-    # Cost by model
-    if tracker.cost_by_model():
-        md_lines.extend(["### Cost Breakdown by Model", ""])
-        for model in sorted(tracker.cost_by_model().keys()):
-            cost = tracker.cost_by_model()[model]
-            md_lines.append(f"- **{model}:** ${cost:.2f}")
-        md_lines.append("")
-
-    # Cost by swarm
-    if tracker.cost_by_swarm():
-        md_lines.extend(["### Cost Breakdown by Vulnerability Class", ""])
-        for swarm_key in sorted(tracker.cost_by_swarm().keys()):
-            cost = tracker.cost_by_swarm()[swarm_key]
-            md_lines.append(f"- **{swarm_key}:** ${cost:.2f}")
-        md_lines.append("")
-
-    markdown_report = "\n".join(md_lines)
-
-    # JSON report
     json_report = {
-        "metadata": {
-            "target_name": target.name,
-            "target_type": target.type,
-            "target_url": target.url,
-            "target_repo": target.repo_url,
-            "timestamp": datetime.utcnow().isoformat(),
+        "target": {
+            "name": target.name,
+            "type": target.type,
+            "url": target.url,
+            "repo_url": target.repo_url,
+            "binary_path": target.binary_path,
+            "scope_allowlist": target.scope_allowlist,
         },
         "summary": {
-            "total_findings": total_count,
-            "confirmed_findings": confirmed_count,
-            "by_severity": severity_counts,
+            **severity_counts,
+            "total_confirmed": total_confirmed,
         },
         "findings": [
             {
-                "id": f.id,
-                "vuln_class": f.vuln_class,
-                "affected_component": f.affected_component,
-                "severity": f.severity,
-                "confirmed": f.confirmed,
-                "proof_of_concept": f.proof_of_concept,
-                "evidence": f.evidence,
-                "solver_model": f.solver_model,
-                "timestamp": f.timestamp.isoformat(),
+                "id": finding.id,
+                "vuln_class": finding.vuln_class,
+                "affected_component": finding.affected_component,
+                "severity": finding.severity,
+                "proof_of_concept": finding.proof_of_concept,
+                "evidence": finding.evidence,
+                "confirmed": finding.confirmed,
+                "solver_model": finding.solver_model,
+                "timestamp": finding.timestamp.isoformat(),
+                "description": finding.description,
             }
-            for f in findings
+            for finding in findings
         ],
-        "cost_analysis": {
-            "total_cost_usd": total_cost,
-            "cost_per_finding_usd": cost_per_finding,
-            "total_api_calls": tracker.call_count(),
-            "total_tokens": tokens,
-            "cost_by_model": tracker.cost_by_model(),
-            "cost_by_swarm": tracker.cost_by_swarm(),
-        },
-    }
-
-    return {
-        "markdown": markdown_report,
-        "json": json_report,
-        "summary": {
-            "critical": severity_counts["critical"],
-            "high": severity_counts["high"],
-            "medium": severity_counts["medium"],
-            "low": severity_counts["low"],
-            "info": severity_counts["info"],
-            "total_confirmed": confirmed_count,
-            "total_findings": total_count,
-        },
         "cost_summary": {
             "total_usd": total_cost,
             "cost_per_finding_usd": cost_per_finding,
@@ -253,4 +215,11 @@ async def generate_report(
             "total_output_tokens": tokens["output"],
             "total_tokens": tokens["total"],
         },
+    }
+
+    return {
+        "markdown": "\n".join(lines),
+        "json": json_report,
+        "summary": {**severity_counts, "total_confirmed": total_confirmed},
+        "cost_summary": json_report["cost_summary"],
     }

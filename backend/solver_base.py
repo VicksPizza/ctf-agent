@@ -1,39 +1,35 @@
-"""Solver result type, status constants, and solver protocol — shared across all backends."""
+"""Scanner result types shared by all backends."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
 
-# Status constants
-FLAG_FOUND = "flag_found"
-GAVE_UP = "gave_up"
+from backend.finding import Finding
+
+FINDING_CONFIRMED = "finding_confirmed"
+NO_FINDING = "no_finding"
 CANCELLED = "cancelled"
 ERROR = "error"
 QUOTA_ERROR = "quota_error"
 
-# Flag confirmation markers from CTFd
-CORRECT_MARKERS = ("CORRECT", "ALREADY SOLVED")
-
 
 @dataclass
-class SolverResult:
-    flag: str | None
+class ScannerResult:
+    finding: Finding | None
     status: str
-    findings_summary: str
+    notes: str
     step_count: int
     cost_usd: float
     log_path: str
 
 
-class SolverProtocol(Protocol):
-    """Common interface for all solver backends (Pydantic AI, Claude SDK, Codex)."""
-
+class ScannerProtocol(Protocol):
     model_spec: str
     agent_name: str
     sandbox: object
 
     async def start(self) -> None: ...
-    async def run_until_done_or_gave_up(self) -> SolverResult: ...
+    async def run_once(self) -> ScannerResult: ...
     def bump(self, insights: str) -> None: ...
     async def stop(self) -> None: ...

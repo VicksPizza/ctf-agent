@@ -1,4 +1,4 @@
-"""Vulnerability finding model and deduplication logic."""
+"""Vulnerability finding model and deduplication helpers."""
 
 from __future__ import annotations
 
@@ -7,68 +7,47 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
+Severity = Literal["critical", "high", "medium", "low", "info"]
+
 
 @dataclass
 class Finding:
-    """A single confirmed or suspected vulnerability."""
-
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    vuln_class: str = "unknown"  # "XSS", "SQLi", "Buffer Overflow", "UAF", "Auth Bypass", etc.
-    affected_component: str = "unknown"  # e.g. "file.py:42" or "/api/search" or "login form"
-    severity: Literal["critical", "high", "medium", "low", "info"] = "medium"
-    description: str = ""  # Detailed explanation of the vulnerability
-    proof_of_concept: str = ""  # payload, exploit code, or test case
-    evidence: str = ""  # crash output, DOM screenshot, HTTP response, stack trace
-    confirmed: bool = False  # True only if PoC was successfully executed and validated
-    solver_model: str = ""  # which model found this
+    vuln_class: str = ""
+    affected_component: str = ""
+    severity: Severity = "medium"
+    proof_of_concept: str = ""
+    evidence: str = ""
+    confirmed: bool = False
+    solver_model: str = ""
     timestamp: datetime = field(default_factory=datetime.utcnow)
-
-    def __hash__(self) -> int:
-        """Hash by vuln_class + affected_component for deduplication."""
-        return hash((self.vuln_class, self.affected_component))
-
-    def __eq__(self, other: object) -> bool:
-        """Equality check for deduplication."""
-        if not isinstance(other, Finding):
-            return NotImplemented
-        return (
-            self.vuln_class == other.vuln_class
-            and self.affected_component == other.affected_component
-        )
+    description: str = ""
 
 
 def deduplicate(findings: list[Finding]) -> list[Finding]:
-    """
-    Merge findings with identical vuln_class + affected_component.
-    Prefers confirmed findings and keeps the most recent timestamp.
-    """
-    by_signature: dict[tuple[str, str], Finding] = {}
+    """Merge findings with the same vulnerability class and affected component."""
+    merged: dict[tuple[str, str], Finding] = {}
+    rank = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
 
     for finding in findings:
-        key = (finding.vuln_class, finding.affected_component)
+        key = (finding.vuln_class.lower(), finding.affected_component.lower())
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = finding
+            continue
 
-        if key not in by_signature:
-            by_signature[key] = finding
+        if finding.confirmed and not existing.confirmed or rank.get(finding.severity, 0) > rank.get(existing.severity, 0):
+            winner = finding
         else:
-            existing = by_signature[key]
+            winner = existing
 
-            # Prefer confirmed over unconfirmed
-            if finding.confirmed and not existing.confirmed:
-                by_signature[key] = finding
-            # Prefer critical/high severity
-            elif (
-                finding.severity in ("critical", "high")
-                and existing.severity not in ("critical", "high")
-            ):
-                by_signature[key] = finding
-            # Merge PoC if current is empty
-            elif not existing.proof_of_concept and finding.proof_of_concept:
-                existing.proof_of_concept = finding.proof_of_concept
-            # Merge evidence
-            elif finding.evidence and not existing.evidence:
-                existing.evidence = finding.evidence
-            # Keep most recent timestamp
-            if finding.timestamp > existing.timestamp:
-                existing.timestamp = finding.timestamp
+        if not winner.proof_of_concept:
+            winner.proof_of_concept = finding.proof_of_concept or existing.proof_of_concept
+        if not winner.evidence:
+            winner.evidence = finding.evidence or existing.evidence
+        if not winner.description:
+            winner.description = finding.description or existing.description
+        winner.timestamp = max(existing.timestamp, finding.timestamp)
+        merged[key] = winner
 
-    return sorted(by_signature.values(), key=lambda f: f.timestamp, reverse=True)
+    return sorted(merged.values(), key=lambda item: (not item.confirmed, item.severity, item.timestamp))
