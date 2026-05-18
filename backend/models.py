@@ -50,7 +50,7 @@ VISION_MODELS: set[str] = {
 # Each swarm specializes in a vulnerability class with custom prompts and model selections
 SWARM_CONFIGS: dict[str, dict] = {
     "xss": {
-        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "models": ["gpt-5.4-mini"],
         "system_prompt_extra": (
             "You are a web security specialist focused on XSS (Cross-Site Scripting) vulnerabilities. "
             "Analyze the target for reflected, stored, and DOM-based XSS. "
@@ -60,7 +60,7 @@ SWARM_CONFIGS: dict[str, dict] = {
         ),
     },
     "sqli": {
-        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "models": ["gpt-5.4-mini"],
         "system_prompt_extra": (
             "You are a database security specialist focused on SQL injection. "
             "Try UNION-based, error-based, blind boolean-based, and time-based techniques. "
@@ -70,7 +70,7 @@ SWARM_CONFIGS: dict[str, dict] = {
         ),
     },
     "bof": {
-        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "models": ["gpt-5.4-mini"],
         "system_prompt_extra": (
             "You are a binary security specialist focused on buffer overflow vulnerabilities. "
             "Analyze stack and heap layouts. Use pwntools, GDB, and ASAN. "
@@ -80,7 +80,7 @@ SWARM_CONFIGS: dict[str, dict] = {
         ),
     },
     "uaf": {
-        "models": ["claude-opus-4-6"],
+        "models": ["gpt-5.4-mini"],
         "system_prompt_extra": (
             "You are a memory safety specialist focused on use-after-free vulnerabilities. "
             "Analyze object lifetime, memory deallocation patterns, and reference counting. "
@@ -90,7 +90,7 @@ SWARM_CONFIGS: dict[str, dict] = {
         ),
     },
     "auth": {
-        "models": ["claude-opus-4-6", "gpt-5.4"],
+        "models": ["gpt-5.4-mini"],
         "system_prompt_extra": (
             "You are an authentication and authorization specialist. "
             "Focus on authentication bypass, insecure direct object reference (IDOR), "
@@ -101,7 +101,7 @@ SWARM_CONFIGS: dict[str, dict] = {
         ),
     },
     "source": {
-        "models": ["claude-opus-4-6"],
+        "models": ["gpt-5.4-mini"],
         "system_prompt_extra": (
             "You are a source code security analyst performing static and dynamic analysis. "
             "Run semgrep with vulnerability rules, bandit for Python, and other static tools. "

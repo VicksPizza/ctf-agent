@@ -1,0 +1,35 @@
+{
+  "target": {
+    "name": "mattermost",
+    "type": "web",
+    "url": "https://mattermost.com/",
+    "repo_url": "https://github.com/mattermost/mattermost",
+    "binary_path": null,
+    "scope_allowlist": [
+      "https://mattermost.com/",
+      "https://github.com/mattermost/mattermost"
+    ]
+  },
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "info": 0,
+    "total_confirmed": 0
+  },
+  "findings": [],
+  "cost_summary": {
+    "total_usd": 0.01428045,
+    "cost_per_finding_usd": 0.0,
+    "by_model": {
+      "gpt-5.4-mini": 0.01428045
+    },
+    "by_swarm": {
+      "mattermost/source/gpt-5.4-mini": 0.01428045
+    },
+    "total_input_tokens": 90499,
+    "total_output_tokens": 1176,
+    "total_tokens": 91675
+  }
+}

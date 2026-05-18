@@ -1,0 +1,37 @@
+{
+  "target": {
+    "name": "crapi",
+    "type": "web",
+    "url": "https://owasp.org/www-project-crapi/",
+    "repo_url": "https://github.com/OWASP/crAPI",
+    "binary_path": null,
+    "scope_allowlist": [
+      "https://owasp.org/www-project-crapi/",
+      "https://github.com/OWASP/crAPI"
+    ]
+  },
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "info": 0,
+    "total_confirmed": 0
+  },
+  "findings": [],
+  "cost_summary": {
+    "total_usd": 0.02478915,
+    "cost_per_finding_usd": 0.0,
+    "by_model": {
+      "gpt-5.4-mini": 0.024789149999999996
+    },
+    "by_swarm": {
+      "crapi/auth/gpt-5.4-mini": 0.007408199999999999,
+      "crapi/sqli/gpt-5.4-mini": 0.0102963,
+      "crapi/source/gpt-5.4-mini": 0.00708465
+    },
+    "total_input_tokens": 156141,
+    "total_output_tokens": 2280,
+    "total_tokens": 158421
+  }
+}

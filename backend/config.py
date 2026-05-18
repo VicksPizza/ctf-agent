@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Vulnerability research
     targets_file: str = "targets.yml"  # Path to targets YAML file
     max_concurrent_swarms: int = 10  # Max parallel scanner swarms
-    max_iterations_per_swarm: int = 50  # Max attempts before giving up
+    max_iterations_per_swarm: int = 1  # Max attempts before giving up
     container_memory_limit: str = "16g"
 
     # Infra

@@ -29,6 +29,17 @@ def normalize_model_spec(model: str) -> str:
     return MODEL_SPEC_MAP.get(model, model)
 
 
+def unique_model_specs(models: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for model in models:
+        normalized = normalize_model_spec(model)
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
 @dataclass
 class ScannerSwarm:
     target: VulnTarget
@@ -48,7 +59,9 @@ class ScannerSwarm:
     def __post_init__(self) -> None:
         if not self.model_specs:
             configured = SWARM_CONFIGS.get(self.vuln_class, {}).get("models", ["gpt-5.4"])
-            self.model_specs = [normalize_model_spec(model) for model in configured]
+            self.model_specs = unique_model_specs(configured)
+        else:
+            self.model_specs = unique_model_specs(self.model_specs)
 
     def _make_notify_fn(self, model_spec: str):
         async def notify(message: str) -> None:
@@ -74,9 +87,17 @@ class ScannerSwarm:
         self.scanners[model_spec] = scanner
         try:
             await scanner.start()
-            for _ in range(self.max_iterations):
+            for iteration in range(1, self.max_iterations + 1):
                 if self.cancel_event.is_set():
                     break
+                logger.info(
+                    "[%s/%s] %s iteration %d/%d",
+                    self.target.name,
+                    self.vuln_class,
+                    model_spec,
+                    iteration,
+                    self.max_iterations,
+                )
                 result = await scanner.run_once()
                 if result.notes:
                     self.notes[model_spec] = result.notes
