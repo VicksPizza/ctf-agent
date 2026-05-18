@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-MAX_OUTPUT = 24_000
+MAX_OUTPUT = 8_000
 
 
 def _truncate(text: str, limit: int = MAX_OUTPUT) -> str:
@@ -75,8 +75,8 @@ async def do_web_fetch(
         async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
             response = await client.request(method, url, content=body or None)
             text = response.text
-            if len(text) > 20_000:
-                text = text[:20_000] + f"\n... [truncated, total {len(response.text)} bytes]"
+            if len(text) > 10_000:
+                text = text[:10_000] + f"\n... [truncated, total {len(response.text)} bytes]"
             return f"HTTP {response.status_code} {response.reason_phrase}\n{'-' * 40}\n{text}"
     except Exception as exc:
         return f"Fetch error: {exc}"

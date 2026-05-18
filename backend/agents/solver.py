@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
@@ -46,6 +45,8 @@ from backend.tools.vision import view_image
 from backend.tracing import ScannerTracer
 
 logger = logging.getLogger(__name__)
+
+MAX_AGENT_REQUESTS = 25
 
 SEMGREP_RULE_MAP = {
     "xss": "p/xss",
@@ -187,6 +188,7 @@ class Scanner:
         self._agent: Agent[ScannerDeps, FindingOutput] | None = None
         self._messages: list = []
         self._step_count = [0]
+        self._iteration_count = 0
         self._notes = ""
 
     async def start(self) -> None:
@@ -226,7 +228,7 @@ class Scanner:
         assert self._agent is not None
         prompt = (
             f"Scan for {self.vuln_class}. Confirm a proof of concept before returning a finding."
-            if not self._messages
+            if self._iteration_count == 0
             else "Continue from the prior work. Avoid repeating failed attempts."
         )
         if self._notes:
@@ -240,9 +242,9 @@ class Scanner:
             result = await self._agent.run(
                 prompt,
                 deps=self._deps,
-                message_history=self._messages if self._messages else None,
-                usage_limits=UsageLimits(request_limit=None),
+                usage_limits=UsageLimits(request_limit=MAX_AGENT_REQUESTS),
             )
+            self._iteration_count += 1
             usage = result.usage()
             self.cost_tracker.record_usage(
                 self.agent_name,
@@ -252,7 +254,9 @@ class Scanner:
                 duration_seconds=time.monotonic() - started,
             )
             self.tracer.usage(usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, 0.0)
-            self._messages = result.all_messages()
+            # Do not retain full tool-call history between passes. Large repos can
+            # otherwise grow the next request past the model context limit.
+            self._messages = []
 
             output = result.output
             if output.type == "finding":
@@ -269,6 +273,7 @@ class Scanner:
                 if validate_finding(finding):
                     return ScannerResult(finding, FINDING_CONFIRMED, output.description, self._step_count[0], 0.0, self.tracer.path)
                 return ScannerResult(finding, NO_FINDING, "Finding did not pass validation.", self._step_count[0], 0.0, self.tracer.path)
+            self._notes = output.evidence[:2000]
             return ScannerResult(None, NO_FINDING, output.evidence, self._step_count[0], 0.0, self.tracer.path)
         except asyncio.CancelledError:
             return ScannerResult(None, CANCELLED, "", self._step_count[0], 0.0, self.tracer.path)
@@ -278,7 +283,6 @@ class Scanner:
 
     def bump(self, insights: str) -> None:
         self._notes = insights
-        self._messages.append(ModelRequest(parts=[UserPromptPart(content=insights)]))
         self.loop_detector.reset()
 
     async def stop(self) -> None:

@@ -6,6 +6,8 @@ creds.json
 logs/
 *.log
 *.jsonl
+report.md
+targets.yml
 
 # Challenge data (downloaded at runtime)
 challenges*/
