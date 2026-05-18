@@ -1,0 +1,34 @@
+{
+  "target": {
+    "name": "Math372CourseSite",
+    "type": "web",
+    "url": "https://max-hill.github.io/math-372/homework/",
+    "repo_url": "https://github.com/max-hill/math-372",
+    "binary_path": null,
+    "scope_allowlist": [
+      "max-hill.github.io/math-372"
+    ]
+  },
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "info": 0,
+    "total_confirmed": 0
+  },
+  "findings": [],
+  "cost_summary": {
+    "total_usd": 0.005548499999999999,
+    "cost_per_finding_usd": 0.0,
+    "by_model": {
+      "gpt-5.4-mini": 0.005548499999999999
+    },
+    "by_swarm": {
+      "Math372CourseSite/source/gpt-5.4-mini": 0.005548499999999999
+    },
+    "total_input_tokens": 34910,
+    "total_output_tokens": 520,
+    "total_tokens": 35430
+  }
+}

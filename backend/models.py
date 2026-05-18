@@ -142,6 +142,13 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                     api_key=settings.azure_openai_api_key,
                 ),
             )
+        case "openai":
+            return OpenAIModel(
+                model_id,
+                provider=OpenAIProvider(
+                    api_key=settings.openai_api_key,
+                ),
+            )
         case "zen":
             return OpenAIModel(
                 model_id,
@@ -175,8 +182,8 @@ def resolve_model_settings(spec: str) -> ModelSettings:
                 bedrock_cache_tool_definitions=True,
                 bedrock_cache_messages=True,
             )
-        case "azure" | "zen":
-            # Azure/Zen use OpenAI chat completions — server-side prompt caching
+        case "openai" | "azure" | "zen":
+            # OpenAI-compatible providers use chat completions; server-side prompt caching
             # is automatic, no explicit config needed. Set max_tokens to avoid
             # reserving the full context window.
             return OpenAIModelSettings(

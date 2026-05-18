@@ -11,17 +11,17 @@ from backend.finding import Finding
 from backend.message_bus import ScannerMessageBus
 from backend.models import SWARM_CONFIGS
 from backend.reporter import CostTracker
-from backend.solver_base import FINDING_CONFIRMED, ScannerProtocol
+from backend.solver_base import ERROR, FINDING_CONFIRMED, QUOTA_ERROR, ScannerProtocol
 from backend.target_loader import VulnTarget
 
 logger = logging.getLogger(__name__)
 
 
 MODEL_SPEC_MAP = {
-    "claude-opus-4-6": "bedrock/us.anthropic.claude-opus-4-6-v1",
-    "gpt-5.4": "azure/gpt-5.4",
-    "gpt-5.4-mini": "azure/gpt-5.4-mini",
-    "gpt-5.3-codex": "zen/gpt-5.3-codex",
+    "claude-opus-4-6": "openai/gpt-5.4",
+    "gpt-5.4": "openai/gpt-5.4",
+    "gpt-5.4-mini": "openai/gpt-5.4-mini",
+    "gpt-5.3-codex": "openai/gpt-5.3-codex",
 }
 
 
@@ -86,6 +86,15 @@ class ScannerSwarm:
                     self.cancel_event.set()
                     logger.info("[%s/%s] confirmed by %s", self.target.name, self.vuln_class, model_spec)
                     return result.finding
+                if result.status in (ERROR, QUOTA_ERROR):
+                    logger.warning(
+                        "[%s/%s] stopping %s after scanner error: %s",
+                        self.target.name,
+                        self.vuln_class,
+                        model_spec,
+                        result.notes[:300],
+                    )
+                    break
                 scanner.bump("Continue expanding the search space. Prioritize reproducible evidence.")
             return None
         finally:

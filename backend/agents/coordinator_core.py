@@ -56,6 +56,7 @@ async def do_spawn_swarm(deps: CoordinatorDeps, vuln_class: str) -> str:
         vuln_class=vuln_class,
         cost_tracker=deps.cost_tracker,
         settings=deps.settings,
+        model_specs=deps.model_specs,
         max_iterations=deps.max_iterations,
         coordinator_inbox=deps.coordinator_inbox,
     )

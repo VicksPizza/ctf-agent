@@ -12,7 +12,6 @@ import click
 from rich.console import Console
 
 from backend.config import Settings
-from backend.models import DEFAULT_MODELS
 
 console = Console()
 
@@ -57,11 +56,11 @@ def main(
         max_concurrent_swarms=max_swarms,
         max_iterations_per_swarm=max_iterations,
     )
-    model_specs = list(models) if models else list(DEFAULT_MODELS)
+    model_specs = list(models) if models else []
 
     console.print("[bold cyan]Vuln Research Agent[/bold cyan]")
     console.print(f"  Targets: {targets}")
-    console.print(f"  Models: {', '.join(model_specs)}")
+    console.print(f"  Models: {', '.join(model_specs) if model_specs else 'scanner swarm defaults'}")
     console.print(f"  Sandbox: {settings.sandbox_image}")
     console.print(f"  Max scanner swarms: {max_swarms}")
     console.print()
